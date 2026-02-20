@@ -1,0 +1,22 @@
+# --- Python / virtualenv ---
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# --- Local results/output ---
+results/
+*.log
+
+# --- LEAF dataset (usually huge) ---
+leaf/data/**
+
+# --- Secrets (Google service account key) ---
+service_account.json
+*service_account*.json
+
+# --- OS / editor ---
+.DS_Store
+.vscode/
+
+.secrets/
