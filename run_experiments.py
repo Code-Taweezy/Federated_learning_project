@@ -446,34 +446,59 @@ def _configure_cross_dataset() -> dict:
         except Exception:
             return None
 
+    # Pull design tokens from the dashboard so both UIs stay in sync
+    try:
+        from results_dashboard import (
+            BG, SURFACE, CARD, BORDER, HDR_BG, HDR_FG,
+            ACCENT, GREEN, AMBER, DIM, FG, MUTED,
+            FONT_UI, FONT_MONO,
+        )
+    except ImportError:
+        BG = '#0d1021'; SURFACE = '#141729'; CARD = '#1a1e35'
+        BORDER = '#252a47'; HDR_BG = '#10142a'; HDR_FG = '#e8ecf8'
+        ACCENT = '#6b8ef5'; GREEN = '#4ec98b'; AMBER = '#f0a832'
+        DIM = '#8b96b8'; FG = '#e0e4f2'; MUTED = '#434c6e'
+        FONT_UI = 'Segoe UI'; FONT_MONO = 'Consolas'
+
     result = {}
 
     root = tk.Tk()
     root.title("Configure Cross-Dataset Suite")
-    root.geometry("420x430")
+    root.geometry("460x460")
     root.resizable(False, False)
-    root.configure(bg='#0f1117')
+    root.configure(bg=BG)
 
-    # ── header ────────────────────────────────────────────────────────────────
-    hdr = tk.Frame(root, bg='#252836', height=46)
+    # ── header bar (matches dashboard header) ─────────────────────────────────
+    hdr = tk.Frame(root, bg=HDR_BG, height=62)
     hdr.pack(fill='x'); hdr.pack_propagate(False)
+    tk.Label(hdr, text='Federated Learning Dashboard',
+             font=(FONT_UI, 13, 'bold'), bg=HDR_BG, fg=HDR_FG
+             ).pack(side='left', padx=20, pady=(12, 0), anchor='sw')
     tk.Label(hdr, text='Cross-Dataset Configuration',
-             font=('Segoe UI', 12, 'bold'), bg='#252836', fg='#7c9ef8'
-             ).pack(side='left', padx=16, pady=10)
+             font=(FONT_UI, 9), bg=HDR_BG, fg=DIM
+             ).pack(side='left', padx=(6, 0), pady=(28, 8), anchor='sw')
+    # thin accent line
+    tk.Frame(root, bg=ACCENT, height=2).pack(fill='x')
 
-    body = tk.Frame(root, bg='#0f1117')
-    body.pack(fill='both', expand=True, padx=24, pady=16)
+    body = tk.Frame(root, bg=BG)
+    body.pack(fill='both', expand=True, padx=24, pady=18)
+
+    def _section_label(text):
+        """Styled section heading matching the dashboard's MUTED caps labels."""
+        tk.Label(body, text=text.upper(),
+                 font=(FONT_UI, 8, 'bold'), bg=BG, fg=MUTED
+                 ).pack(anchor='w', pady=(10, 4))
+        tk.Frame(body, bg=BORDER, height=1).pack(fill='x', pady=(0, 8))
 
     # ── attack ratio slider ───────────────────────────────────────────────────
-    tk.Label(body, text='Attack Ratio', font=('Segoe UI', 10, 'bold'),
-             bg='#0f1117', fg='#cdd6f4').pack(anchor='w', pady=(0, 4))
+    _section_label('Attack Ratio')
 
-    slider_row = tk.Frame(body, bg='#0f1117')
+    slider_row = tk.Frame(body, bg=BG)
     slider_row.pack(fill='x')
 
     ratio_var = tk.DoubleVar(value=0.25)
     ratio_lbl = tk.Label(slider_row, text='0.25', width=5,
-                         font=('Consolas', 11, 'bold'), bg='#0f1117', fg='#ebcb8b')
+                         font=(FONT_MONO, 11, 'bold'), bg=BG, fg=AMBER)
     ratio_lbl.pack(side='right')
 
     def _on_slider(val):
@@ -483,68 +508,66 @@ def _configure_cross_dataset() -> dict:
     slider = tk.Scale(slider_row, from_=0.0, to=0.5, resolution=0.05,
                       orient='horizontal', variable=ratio_var,
                       command=_on_slider,
-                      bg='#0f1117', fg='#cdd6f4', troughcolor='#2a2d3e',
-                      highlightthickness=0, activebackground='#7c9ef8',
-                      sliderrelief='flat', length=280, showvalue=False)
+                      bg=BG, fg=FG, troughcolor=BORDER,
+                      highlightthickness=0, activebackground=ACCENT,
+                      sliderrelief='flat', length=300, showvalue=False)
     slider.pack(side='left', fill='x', expand=True)
 
     tk.Label(body, text='0.0 = no attack    0.5 = 50% compromised',
-             font=('Segoe UI', 8), bg='#0f1117', fg='#4c566a'
-             ).pack(anchor='w', pady=(2, 14))
+             font=(FONT_UI, 8), bg=BG, fg=MUTED
+             ).pack(anchor='w', pady=(0, 2))
 
     # ── attack type toggle ────────────────────────────────────────────────────
-    tk.Label(body, text='Attack Type', font=('Segoe UI', 10, 'bold'),
-             bg='#0f1117', fg='#cdd6f4').pack(anchor='w', pady=(0, 6))
+    _section_label('Attack Type')
 
     type_var = tk.StringVar(value='directed')
-    toggle_row = tk.Frame(body, bg='#0f1117')
+    toggle_row = tk.Frame(body, bg=BG)
     toggle_row.pack(anchor='w')
 
     for label, value, colour in [
-        ('Directed',  'directed', '#7c9ef8'),
-        ('Gaussian',  'gaussian', '#a3be8c'),
+        ('Directed',  'directed', ACCENT),
+        ('Gaussian',  'gaussian', GREEN),
     ]:
-        rb = tk.Radiobutton(
+        tk.Radiobutton(
             toggle_row, text=label, variable=type_var, value=value,
-            font=('Segoe UI', 10), bg='#0f1117', fg=colour,
-            selectcolor='#1a1d2e', activebackground='#0f1117',
+            font=(FONT_UI, 10), bg=BG, fg=colour,
+            selectcolor=CARD, activebackground=BG,
             activeforeground=colour, indicatoron=True,
-        )
-        rb.pack(side='left', padx=(0, 20))
+        ).pack(side='left', padx=(0, 20))
 
     tk.Label(body,
              text='Directed: push models toward a target class\n'
                   'Gaussian: add noise to gradients',
-             font=('Segoe UI', 8), bg='#0f1117', fg='#4c566a', justify='left'
-             ).pack(anchor='w', pady=(4, 14))
+             font=(FONT_UI, 8), bg=BG, fg=MUTED, justify='left'
+             ).pack(anchor='w', pady=(6, 2))
 
     # ── topology selector ─────────────────────────────────────────────────────
-    tk.Label(body, text='Topology', font=('Segoe UI', 10, 'bold'),
-             bg='#0f1117', fg='#cdd6f4').pack(anchor='w', pady=(0, 6))
+    _section_label('Topology')
 
     topo_var = tk.StringVar(value='ring')
-    topo_row = tk.Frame(body, bg='#0f1117')
+    topo_row = tk.Frame(body, bg=BG)
     topo_row.pack(anchor='w')
 
     for label, value, colour in [
-        ('Ring',        'ring',      '#7c9ef8'),
-        ('k-Regular',   'k-regular', '#a3be8c'),
-        ('Fully',       'fully',     '#ebcb8b'),
+        ('Ring',      'ring',      ACCENT),
+        ('k-Regular', 'k-regular', GREEN),
+        ('Fully',     'fully',     AMBER),
     ]:
         tk.Radiobutton(
             topo_row, text=label, variable=topo_var, value=value,
-            font=('Segoe UI', 10), bg='#0f1117', fg=colour,
-            selectcolor='#1a1d2e', activebackground='#0f1117',
+            font=(FONT_UI, 10), bg=BG, fg=colour,
+            selectcolor=CARD, activebackground=BG,
             activeforeground=colour, indicatoron=True,
         ).pack(side='left', padx=(0, 16))
 
     tk.Label(body,
              text='Ring: chain  |  k-Regular: k nearest  |  Fully: all connected',
-             font=('Segoe UI', 8), bg='#0f1117', fg='#4c566a'
-             ).pack(anchor='w', pady=(4, 0))
+             font=(FONT_UI, 8), bg=BG, fg=MUTED
+             ).pack(anchor='w', pady=(6, 0))
 
-    # ── buttons ───────────────────────────────────────────────────────────────
-    btn_row = tk.Frame(root, bg='#1a1d2e', height=52)
+    # ── buttons (matches dashboard footer style) ───────────────────────────────
+    tk.Frame(root, bg=BORDER, height=1).pack(fill='x')
+    btn_row = tk.Frame(root, bg=SURFACE, height=54)
     btn_row.pack(fill='x', side='bottom'); btn_row.pack_propagate(False)
 
     def _launch():
@@ -557,12 +580,14 @@ def _configure_cross_dataset() -> dict:
         root.destroy()
 
     tk.Button(btn_row, text='Cancel', command=_cancel,
-              font=('Segoe UI', 10), bg='#2a2d3e', fg='#4c566a',
-              relief='flat', padx=18, pady=6, cursor='hand2'
-              ).pack(side='right', padx=(0, 8), pady=10)
-    tk.Button(btn_row, text='Launch Suite', command=_launch,
-              font=('Segoe UI', 10, 'bold'), bg='#7c9ef8', fg='#0f1117',
-              relief='flat', padx=18, pady=6, cursor='hand2'
+              font=(FONT_UI, 10), bg=CARD, fg=DIM,
+              relief='flat', padx=18, pady=6, cursor='hand2',
+              activebackground=BORDER, activeforeground=FG,
+              ).pack(side='right', padx=(0, 10), pady=10)
+    tk.Button(btn_row, text='Launch Suite  ›', command=_launch,
+              font=(FONT_UI, 10, 'bold'), bg=ACCENT, fg=BG,
+              relief='flat', padx=18, pady=6, cursor='hand2',
+              activebackground='#8fa8ff', activeforeground=BG,
               ).pack(side='right', padx=(0, 4), pady=10)
 
     root.mainloop()

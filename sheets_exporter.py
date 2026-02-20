@@ -34,7 +34,7 @@ HEADER = [
 _DATASET_LABEL: dict[str, str] = {
     "femnist":     "Femnist",
     "celeba":      "Celeba",
-    "shakespeare": "Shakespear",   # matches your existing tab name
+    "shakespeare": "Shakespeare",   
     "reddit":      "Reddit",
 }
 
@@ -47,10 +47,12 @@ _ATTACK_LABEL: dict[str, str] = {
 
 
 def tab_name_for(dataset: str, attack_type: str, attack_ratio: float) -> str:
-    """Return the spreadsheet tab name for a given dataset / attack combination."""
+    """Return the spreadsheet tab name for a given dataset / attack combination.
+
+    Tab names follow the pattern "<Dataset> - <AttackType>", e.g.:
+      "Femnist - Direct", "Shakespeare - Gaussian", etc.
+    """
     ds  = _DATASET_LABEL.get(dataset.lower(), dataset.title())
-    if attack_ratio == 0.0:
-        return f"{ds} - None"
     atk = _ATTACK_LABEL.get(attack_type.lower(), attack_type.title())
     return f"{ds} - {atk}"
 
@@ -114,8 +116,9 @@ def export_results(results_path: str, config_path: str = "sheets_config.json") -
     run_id        = data.get("run_id", Path(results_path).stem)
     round_results = data.get("round_results", [])
     summary       = data.get("summary", {})
-    final_acc     = summary.get("final_accuracy",  "")
-    final_loss_v  = summary.get("final_loss",       "")
+    final_acc     = summary.get("final_accuracy", "")
+    # final_loss lives in the last round's avg_loss, not in summary
+    final_loss_v  = round_results[-1].get("avg_loss", "") if round_results else ""
 
     if not round_results:
         print("[Sheets] No round_results found in JSON — nothing to export.")
@@ -134,15 +137,58 @@ def export_results(results_path: str, config_path: str = "sheets_config.json") -
     # -- find or create the right worksheet -----------------------------------
     tab = tab_name_for(dataset, attack_type, attack_ratio)
     try:
-        ws = spread.worksheet(tab)
-    except gspread.WorksheetNotFound:
+        all_sheets = spread.worksheets()
+    except Exception as exc:
+        print(f"[Sheets] Could not list worksheets: {exc}")
+        return False
+
+    # Case-insensitive match so manually-named tabs like "FEMNIST - None" still hit
+    ws = None
+    for sheet in all_sheets:
+        if sheet.title == tab:          # exact match first
+            ws = sheet
+            break
+    if ws is None:
+        for sheet in all_sheets:
+            if sheet.title.lower() == tab.lower():
+                ws = sheet
+                break
+    if ws is None:
         ws = spread.add_worksheet(title=tab, rows=2000, cols=len(HEADER))
         print(f"[Sheets] Created new tab '{tab}'")
 
-    # Write header if the sheet is completely empty
+    # Convenience: last column letter for range strings (HEADER has 17 cols → 'Q')
+    last_col = chr(ord('A') + len(HEADER) - 1)
+
+    def _fmt_header_row():
+        """Apply bold + dark-blue background to the header row (row 1)."""
+        try:
+            ws.format(f'A1:{last_col}1', {
+                'backgroundColor': {'red': 0.145, 'green': 0.165, 'blue': 0.278},
+                'textFormat': {
+                    'bold': True,
+                    'foregroundColor': {'red': 0.878, 'green': 0.894, 'blue': 0.949},
+                },
+                'horizontalAlignment': 'CENTER',
+            })
+        except Exception:
+            pass  # formatting is best-effort
+
+    # Write header if the first row is missing or doesn't look like our header
     existing = ws.get_all_values()
+    header_is_new = False
     if not existing:
         ws.append_row(HEADER, value_input_option="USER_ENTERED")
+        existing = [HEADER]
+        header_is_new = True
+    elif existing[0] != HEADER:
+        ws.insert_row(HEADER, index=1, value_input_option="USER_ENTERED")
+        existing = [HEADER] + existing
+        header_is_new = True
+        print(f"[Sheets] Inserted header row into existing tab '{tab}'")
+
+    if header_is_new:
+        _fmt_header_row()
 
     # -- build rows (one per round) -------------------------------------------
     last_round = total_rounds or (round_results[-1].get("round", 0) if round_results else 0)

@@ -74,11 +74,11 @@ class NetworkGraph:
             #each node connects to k nearest neighbors (circular)
             if self.k >= self.num_nodes:
                 self.k = self.num_nodes - 1 # max neighbors is num_nodes - 1
-            half_k = self.k//2
+            half_k = self.k // 2
 
-            for offset in range(self.num_nodes):
+            for i in range(self.num_nodes):
                 neighbors = []
-                for offset in range(1, half_k +1):
+                for offset in range(1, half_k + 1):
                     neighbors.append((i + offset) % self.num_nodes)
                     neighbors.append((i - offset) % self.num_nodes)
                 adj[i] = list(set(neighbors))[:self.k]

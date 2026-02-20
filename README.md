@@ -1,4 +1,5 @@
-
+Before you get started: 
+pip install -r requirements.txt
 1) Network Tpology Graph
   - Red nodes = malicious nodes 
   - Blue nodes - Honest nodes 

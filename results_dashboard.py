@@ -19,8 +19,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 # ---------------------------------------------------------------------------
-# Design tokens  – adjusted for readability (all DIM text >= 5:1 contrast)
-# ---------------------------------------------------------------------------
+# Design tokens  
 BG          = '#0d1021'   # page background
 SURFACE     = '#141729'   # panel / card surface
 CARD        = '#1a1e35'   # slightly elevated card
