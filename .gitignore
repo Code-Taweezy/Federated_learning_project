@@ -14,6 +14,10 @@ leaf/data/**
 # --- Secrets (Google service account key) ---
 service_account.json
 *service_account*.json
+# Google Sheets local config
+sheets_config.json
+service_account.json
+.secrets/
 
 # --- OS / editor ---
 .DS_Store
