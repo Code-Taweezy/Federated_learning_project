@@ -30,12 +30,22 @@ HEADER = [
     "Final Acc", "Final Loss",
 ]
 
+# Extended header for advanced metrics tab
+METRICS_HEADER = [
+    "Timestamp", "Run ID", "Aggregator", "Dataset", "Topology",
+    "Num Nodes", "Attack Ratio", "Attack Type",
+    "Round", "Drift Mean", "Drift Std",
+    "Peer Dev Mean", "Consensus Score",
+    "Regression Slope", "R²",
+    "Detection Flags",
+    "TP (cumul)", "FP (cumul)", "TN (cumul)", "FN (cumul)",
+    "T_detect", "Time w/o Detection (s)", "Time w/ Detection (s)",
+]
+
 # Maps internal dataset names -> display names matching your spreadsheet tabs
 _DATASET_LABEL: dict[str, str] = {
     "femnist":     "Femnist",
-    "celeba":      "Celeba",
-    "shakespeare": "Shakespeare",   
-    "reddit":      "Reddit",
+    "shakespeare": "Shakespeare",
 }
 
 # Maps internal attack type names -> display names matching your spreadsheet tabs
@@ -220,7 +230,107 @@ def export_results(results_path: str, config_path: str = "sheets_config.json") -
     try:
         ws.append_rows(rows, value_input_option="USER_ENTERED")
         print(f"[Sheets] Exported {len(rows)} rows -> tab '{tab}'")
-        return True
     except Exception as exc:
         print(f"[Sheets] Write failed: {exc}")
         return False
+
+    # -- export advanced metrics to a separate tab ----------------------------
+    try:
+        _export_metrics_tab(
+            spread, data, timestamp, run_id,
+            aggregation, dataset, topology, num_nodes, attack_ratio, attack_type,
+        )
+    except Exception as exc:
+        print(f"[Sheets] Metrics tab export failed (non-fatal): {exc}")
+
+    return True
+
+
+def _export_metrics_tab(spread, data: dict,
+                        timestamp, run_id, aggregation, dataset,
+                        topology, num_nodes, attack_ratio, attack_type):
+    """Write per-round advanced metrics to a dedicated '<Dataset> - Metrics' tab."""
+    round_results = data.get("round_results", [])
+    summary = data.get("summary", {})
+    detection = summary.get("detection", {}) or {}
+    t_detect = detection.get("detection_time", "")
+
+    metrics_rows = []
+    for rr in round_results:
+        rnd = rr.get("round", "")
+        flags_list = rr.get("detection_flags", [])
+        n_flagged = sum(1 for f in flags_list if f.get("flagged")) if isinstance(flags_list, list) else ""
+        metrics_rows.append([
+            timestamp,
+            run_id,
+            aggregation,
+            dataset,
+            topology,
+            num_nodes,
+            attack_ratio,
+            attack_type,
+            rnd,
+            rr.get("drift_mean", ""),
+            rr.get("drift_std", ""),
+            rr.get("peer_deviation_mean", ""),
+            rr.get("consensus_score", ""),
+            rr.get("regression_slope", ""),
+            rr.get("regression_r_squared", ""),
+            n_flagged,
+            detection.get("true_positives", ""),
+            detection.get("false_positives", ""),
+            detection.get("true_negatives", ""),
+            detection.get("false_negatives", ""),
+            t_detect,
+            rr.get("time_without_detection", data.get("summary", {}).get("overhead_avg", {}).get("without_detection", "")),
+            rr.get("time_with_detection", data.get("summary", {}).get("overhead_avg", {}).get("with_detection", "")),
+        ])
+
+    if not metrics_rows:
+        return
+
+    ds_label = _DATASET_LABEL.get(dataset.lower(), dataset.title())
+    tab_name = f"{ds_label} - Metrics"
+    last_col = chr(ord('A') + len(METRICS_HEADER) - 1)
+
+    # Find or create the metrics tab
+    all_sheets = spread.worksheets()
+    ws = None
+    for sheet in all_sheets:
+        if sheet.title == tab_name:
+            ws = sheet
+            break
+    if ws is None:
+        for sheet in all_sheets:
+            if sheet.title.lower() == tab_name.lower():
+                ws = sheet
+                break
+    if ws is None:
+        ws = spread.add_worksheet(title=tab_name, rows=2000, cols=len(METRICS_HEADER))
+        print(f"[Sheets] Created new metrics tab '{tab_name}'")
+
+    # Header
+    existing = ws.get_all_values()
+    header_is_new = False
+    if not existing:
+        ws.append_row(METRICS_HEADER, value_input_option="USER_ENTERED")
+        header_is_new = True
+    elif existing[0] != METRICS_HEADER:
+        ws.insert_row(METRICS_HEADER, index=1, value_input_option="USER_ENTERED")
+        header_is_new = True
+
+    if header_is_new:
+        try:
+            ws.format(f'A1:{last_col}1', {
+                'backgroundColor': {'red': 0.145, 'green': 0.165, 'blue': 0.278},
+                'textFormat': {
+                    'bold': True,
+                    'foregroundColor': {'red': 0.878, 'green': 0.894, 'blue': 0.949},
+                },
+                'horizontalAlignment': 'CENTER',
+            })
+        except Exception:
+            pass
+
+    ws.append_rows(metrics_rows, value_input_option="USER_ENTERED")
+    print(f"[Sheets] Exported {len(metrics_rows)} metrics rows -> tab '{tab_name}'")

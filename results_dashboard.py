@@ -18,23 +18,23 @@ import queue
 from datetime import datetime
 from typing import Dict, List, Optional
 
-# ---------------------------------------------------------------------------
+
 # Design tokens  
 BG          = '#0d1021'   # page background
-SURFACE     = '#141729'   # panel / card surface
+SURFACE     = '#141729'   # card surface
 CARD        = '#1a1e35'   # slightly elevated card
-BORDER      = '#252a47'   # visible but subtle border
+BORDER      = '#252a47'   # subtle border
 HDR_BG      = '#10142a'   # header bar background
-HDR_FG      = '#e8ecf8'   # header primary text  (near-white)
+HDR_FG      = '#e8ecf8'   # header primary text  
 ACCENT      = '#6b8ef5'   # primary blue accent
 GREEN       = '#4ec98b'   # success / honest
 AMBER       = '#f0a832'   # in-progress / warning
 RED         = '#e05572'   # error / compromised
 DIM         = '#8b96b8'   # secondary text  (>=5:1 on SURFACE)
 FG          = '#e0e4f2'   # main body text  (>=8:1 on SURFACE)
-MUTED       = '#434c6e'   # truly muted (separators, placeholders)
+MUTED       = '#434c6e'   # separators, placeholders
 
-# Keep legacy aliases so any external code referencing them still works
+
 SURFACE_CARD = CARD
 BLUE         = ACCENT
 HEADER       = HDR_BG
@@ -47,6 +47,37 @@ LINE_COLOURS = [
 FONT_UI   = 'Segoe UI'
 FONT_MONO = 'Consolas'
 
+# Column tooltip descriptions
+ROUND_COL_TIPS = {
+    'Round':                 'Simulation round number',
+    'Average Accuracy':      'Mean accuracy across all nodes',
+    'Std Deviation':         'Standard deviation of accuracy across nodes',
+    'Average Loss':          'Mean loss across all nodes',
+    'Honest Accuracy':       'Mean accuracy of honest (non-attack) nodes',
+    'Compromised Accuracy':  'Mean accuracy of compromised (Byzantine) nodes',
+    'Drift Mean':            'Mean parameter drift across the network',
+    'Drift Std':             'Standard deviation of parameter drift',
+    'Consensus':             'Global consensus score \u2014 higher means more agreement',
+    'Slope':                 'Regression slope of accuracy over recent window',
+    'R\u00b2':                    'Coefficient of determination of accuracy regression',
+    'Flags':                 'Number of nodes flagged as anomalous this round',
+}
+
+SUMMARY_COL_TIPS = {
+    'Experiment':            'Experiment name / configuration',
+    'Status':                'Completion status (Done / Failed)',
+    'Final Accuracy':        'Final global model accuracy',
+    'Honest Accuracy':       'Final accuracy of honest nodes',
+    'Compromised Accuracy':  'Final accuracy of compromised nodes',
+    'Attack Impact':         'Accuracy gap: honest \u2212 compromised',
+    'TP':                    'True Positives \u2014 compromised nodes correctly flagged',
+    'FP':                    'False Positives \u2014 honest nodes incorrectly flagged',
+    'TN':                    'True Negatives \u2014 honest nodes correctly not flagged',
+    'FN':                    'False Negatives \u2014 compromised nodes missed',
+    'T_detect':              'Detection time: first round a true positive was flagged',
+    'Duration':              'Total wall-clock time for the experiment',
+}
+
 
 class ResultsDashboard:
 
@@ -56,18 +87,22 @@ class ResultsDashboard:
         self._q: queue.Queue  = queue.Queue()
         self._root            = None
         self._round_data: Dict[str, List[dict]] = {n: [] for n in experiment_names}
+        self._metrics_data: Dict[str, List[dict]] = {n: [] for n in experiment_names}
         self._status:     Dict[str, str]        = {n: 'waiting' for n in experiment_names}
         self._summary:    Dict[str, dict]       = {}
         self._current_exp: Optional[str]        = None
         self._done_count  = 0
         self._hidden_exps: set                  = set()   # click-to-toggle series
 
-    # --- thread-safe notification API -----------------------------------------
+    #thread-safe notification API 
     def notify_start(self, exp_name: str, idx: int, total: int):
         self._q.put(('start', exp_name, idx, total))
 
     def notify_round(self, exp_name: str, row: dict):
         self._q.put(('round', exp_name, row))
+
+    def notify_metrics(self, exp_name: str, rnd: int, metrics: dict):
+        self._q.put(('metrics', exp_name, rnd, metrics))
 
     def notify_done(self, exp_name: str, result: dict):
         self._q.put(('done', exp_name, result))
@@ -75,7 +110,7 @@ class ResultsDashboard:
     def notify_suite_done(self):
         self._q.put(('suite_done',))
 
-    # --- main entry -----------------------------------------------------------
+    # -main entry
     def run(self):
         try:
             import tkinter as tk
@@ -90,10 +125,16 @@ class ResultsDashboard:
             import matplotlib
             matplotlib.use('TkAgg', force=True)
         except Exception:
-            pass  # best-effort; if TkAgg is already active this is fine
+            pass  
 
         self._tk   = tk
         self._ttk  = ttk
+        # Enable DPI awareness for sharp text on high-DPI displays
+        try:
+            from ctypes import windll
+            windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            pass
         self._root = tk.Tk()
         try:
             self._build_gui()
@@ -106,7 +147,7 @@ class ResultsDashboard:
         self._root.after(80, self._drain_queue)
         self._root.mainloop()
 
-    # --- GUI ------------------------------------------------------------------
+    # GUI
     def _build_gui(self):
         tk, ttk, root = self._tk, self._ttk, self._root
         title = self.suite_name.replace('_', ' ').title()
@@ -115,7 +156,7 @@ class ResultsDashboard:
         root.minsize(960, 600)
         root.configure(bg=BG)
 
-        # --- style sheet ---
+        # Style sheet
         st = ttk.Style(root)
         st.theme_use('clam')
 
@@ -141,7 +182,7 @@ class ResultsDashboard:
             st.configure(sname, background=BORDER, troughcolor=SURFACE,
                          arrowcolor=DIM, borderwidth=0, width=8)
 
-        # --- header ---
+        # The Header
         hdr = tk.Frame(root, bg=HDR_BG, height=62)
         hdr.pack(fill='x')
         hdr.pack_propagate(False)
@@ -167,15 +208,20 @@ class ResultsDashboard:
                                 font=(FONT_UI, 9), bg=HDR_BG, fg=DIM)
         self._ts_lbl.pack(side='top', anchor='e')
 
-        # thin accent line + progress strip
+        # Progress bar and accent strip
         tk.Frame(root, bg=ACCENT, height=2).pack(fill='x')
-        self._prog_c = tk.Canvas(root, bg=SURFACE, height=5,
+        self._prog_c = tk.Canvas(root, bg=SURFACE, height=22,
                                  highlightthickness=0)
         self._prog_c.pack(fill='x')
+        self._prog_bg = self._prog_c.create_rectangle(
+            0, 0, 4000, 22, fill=BORDER, outline='')
         self._prog_r = self._prog_c.create_rectangle(
-            0, 0, 0, 5, fill=ACCENT, outline='')
+            0, 0, 0, 22, fill=ACCENT, outline='')
+        self._prog_txt = self._prog_c.create_text(
+            670, 11, text='0 %', fill=HDR_FG,
+            font=(FONT_UI, 9, 'bold'))
 
-        # --- status row ---
+        # Status row
         sr = tk.Frame(root, bg=BG)
         sr.pack(fill='x', padx=18, pady=(8, 0))
         tk.Label(sr, text='STATUS',
@@ -185,7 +231,7 @@ class ResultsDashboard:
                                     font=(FONT_UI, 10), bg=BG, fg=AMBER)
         self._active_lbl.pack(side='left', padx=8)
 
-        # --- body ---
+        # Body
         body = tk.Frame(root, bg=BG)
         body.pack(fill='both', expand=True, pady=(8, 0))
 
@@ -236,11 +282,13 @@ class ResultsDashboard:
         t1 = tk.Frame(nb, bg=SURFACE); nb.add(t1, text='   Live Charts   ')
         t2 = tk.Frame(nb, bg=SURFACE); nb.add(t2, text='   Round Table   ')
         t3 = tk.Frame(nb, bg=SURFACE); nb.add(t3, text='   Summary   ')
+        t4 = tk.Frame(nb, bg=SURFACE); nb.add(t4, text='   Advanced Metrics   ')
         self._build_charts_tab(t1)
         self._build_table_tab(t2)
         self._build_summary_tab(t3)
+        self._build_advanced_tab(t4)
 
-    # --- tabs -----------------------------------------------------------------
+    # tabs 
     def _build_charts_tab(self, parent):
         import matplotlib.pyplot as plt
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -270,7 +318,7 @@ class ResultsDashboard:
         self._ann_loss  = None
         self._loss_ymax = 0.0
 
-        # --- clickable series legend (Desmos-style) --------------------------
+        # Clickable series legend (allows you to hide/show individual graphs on the charts)
         self._hidden_exps:   set          = set()
         self._hover_data:    Dict         = {}
         self._legend_btns:   Dict[str, dict] = {}
@@ -321,13 +369,22 @@ class ResultsDashboard:
         }
 
     def _toggle_series(self, name: str):
-        """Show/hide a series and refresh charts."""
+        """Show/hide a series and refresh all charts."""
         if name in self._hidden_exps:
             self._hidden_exps.discard(name)
         else:
             self._hidden_exps.add(name)
         self._refresh_legend_btn(name)
+        # Also refresh the advanced-tab legend if it exists
+        adv_item = getattr(self, '_adv_legend_btns', {}).get(name)
+        if adv_item:
+            is_vis = name not in self._hidden_exps
+            adv_item['swatch'].itemconfig(
+                adv_item['rect_id'],
+                fill=adv_item['colour'] if is_vis else MUTED)
+            adv_item['label'].config(fg=FG if is_vis else MUTED)
         self._update_live_charts()
+        self._update_advanced_charts()
 
     def _refresh_legend_btn(self, name: str):
         item = self._legend_btns.get(name)
@@ -357,13 +414,20 @@ class ResultsDashboard:
             'Average Loss',
             'Honest Accuracy',
             'Compromised Accuracy',
+            'Drift Mean',
+            'Drift Std',
+            'Consensus',
+            'Slope',
+            'R²',
+            'Flags',
         )
         self._round_tree = self._make_tree(
             parent, cols,
-            col_width=155,
-            col_widths={'Round': 70},
+            col_width=120,
+            col_widths={'Round': 60, 'Flags': 55, 'R²': 70, 'Slope': 80,
+                        'Consensus': 95, 'Drift Mean': 95, 'Drift Std': 85},
         )
-
+        self._bind_tree_tooltips(self._round_tree, ROUND_COL_TIPS)
     def _build_summary_tab(self, parent):
         import matplotlib.pyplot as plt
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -381,14 +445,21 @@ class ResultsDashboard:
             'Honest Accuracy',
             'Compromised Accuracy',
             'Attack Impact',
+            'TP',
+            'FP',
+            'TN',
+            'FN',
+            'T_detect',
             'Duration',
         )
         self._sum_tree = self._make_tree(
             parent, cols,
-            col_widths={'Experiment': 240, 'Status': 72,
-                        'Final Accuracy': 130, 'Honest Accuracy': 130,
-                        'Compromised Accuracy': 164,
-                        'Attack Impact': 120, 'Duration': 88},
+            col_widths={'Experiment': 200, 'Status': 62,
+                        'Final Accuracy': 110, 'Honest Accuracy': 112,
+                        'Compromised Accuracy': 146,
+                        'Attack Impact': 100,
+                        'TP': 44, 'FP': 44, 'TN': 44, 'FN': 44,
+                        'T_detect': 68, 'Duration': 78},
             height=7)
         self._sum_iids: dict = {}
         for name in self.experiment_names:
@@ -396,6 +467,7 @@ class ResultsDashboard:
                 '', 'end',
                 values=(name, 'Waiting', '–', '–', '–', '–', '–'))
             self._sum_iids[name] = iid
+        self._bind_tree_tooltips(self._sum_tree, SUMMARY_COL_TIPS)
         cf = tk.Frame(parent, bg=SURFACE)
         cf.pack(fill='both', expand=True, padx=8, pady=6)
         self._sum_fig, self._sum_axes = plt.subplots(1, 2, figsize=(11, 3.0))
@@ -436,7 +508,67 @@ class ResultsDashboard:
         wrap.grid_columnconfigure(0, weight=1)
         return tree
 
-    # --- queue drain ----------------------------------------------------------
+    def _bind_tree_tooltips(self, tree, descriptions: dict):
+        """Bind hover tooltips to Treeview column headings."""
+        tk = self._tk
+        tip_win = [None]
+        after_id = [None]
+        cur_col = [None]
+
+        def _show(x, y, col, desc):
+            _hide_tip()
+            tw = tk.Toplevel(tree)
+            tw.wm_overrideredirect(True)
+            tw.wm_geometry(f'+{x + 12}+{y + 16}')
+            tw.configure(bg=BORDER)
+            inner = tk.Frame(tw, bg=CARD, padx=10, pady=6)
+            inner.pack(padx=1, pady=1)
+            tk.Label(inner, text=col, font=(FONT_UI, 9, 'bold'),
+                     bg=CARD, fg=ACCENT).pack(anchor='w')
+            tk.Label(inner, text=desc, font=(FONT_UI, 8),
+                     bg=CARD, fg=FG, wraplength=260,
+                     justify='left').pack(anchor='w', pady=(2, 0))
+            tip_win[0] = tw
+
+        def _hide_tip():
+            if tip_win[0]:
+                tip_win[0].destroy()
+                tip_win[0] = None
+
+        def _on_motion(event):
+            region = tree.identify_region(event.x, event.y)
+            if region == 'heading':
+                col_id = tree.identify_column(event.x)
+                if col_id == '#0':
+                    _cancel()
+                    return
+                col_idx = int(col_id.replace('#', '')) - 1
+                cols = tree['columns']
+                if 0 <= col_idx < len(cols):
+                    col_name = cols[col_idx]
+                    if col_name != cur_col[0]:
+                        _cancel()
+                        cur_col[0] = col_name
+                        desc = descriptions.get(col_name)
+                        if desc:
+                            after_id[0] = tree.after(
+                                420,
+                                lambda ex=event.x_root, ey=event.y_root:
+                                    _show(ex, ey, col_name, desc))
+            else:
+                _cancel()
+
+        def _cancel(event=None):
+            cur_col[0] = None
+            if after_id[0]:
+                tree.after_cancel(after_id[0])
+                after_id[0] = None
+            _hide_tip()
+
+        tree.bind('<Motion>', _on_motion)
+        tree.bind('<Leave>', _cancel)
+
+    # Draining the Queue
     def _drain_queue(self):
         try:
             while True:
@@ -458,11 +590,40 @@ class ResultsDashboard:
                     if name == self._table_var.get():
                         self._insert_round_row(row)
                     self._update_live_charts()
+                elif mtype == 'metrics':
+                    _, name, rnd, metrics = msg
+                    self._metrics_data[name].append(
+                        dict(metrics, round=rnd))
+                    # Merge metrics into the last matching round row for the table
+                    for r in reversed(self._round_data.get(name, [])):
+                        if r.get('round') == rnd:
+                            r.update(metrics)
+                            break
+                    # Refresh round table if this experiment is selected
+                    if name == self._table_var.get():
+                        self._refresh_round_table(name)
+                    self._update_advanced_charts()
                 elif mtype == 'done':
                     _, name, res = msg
                     self._status[name]  = 'failed' if res.get('error') else 'done'
                     self._summary[name] = res
                     self._done_count   += 1
+                    # Pull detection metrics from the last metrics row
+                    mdata = self._metrics_data.get(name, [])
+                    if mdata and 'detection' not in res:
+                        last = mdata[-1]
+                        res['detection'] = {
+                            'true_positives':  last.get('tp', 0),
+                            'false_positives': last.get('fp', 0),
+                            'true_negatives':  last.get('tn', 0),
+                            'false_negatives': last.get('fn', 0),
+                            'detection_time':  None,
+                        }
+                        # Find first round where tp > 0
+                        for md in mdata:
+                            if md.get('tp', 0) > 0:
+                                res['detection']['detection_time'] = md['round']
+                                break
                     self._update_sidebar(name, self._status[name])
                     self._update_sum_row(name, res)
                     self._set_progress(
@@ -480,18 +641,22 @@ class ResultsDashboard:
         if self._root:
             self._root.after(80, self._drain_queue)
 
-    # --- progress bar --------------------------------------------------------
+    # Progress bar
     def _set_progress(self, frac: float):
         w = self._prog_c.winfo_width() or 1300
-        self._prog_c.coords(self._prog_r, 0, 0, int(w * max(0.01, frac)), 4)
+        fill_w = int(w * max(0.005, frac))
+        self._prog_c.coords(self._prog_r, 0, 0, fill_w, 22)
+        pct = int(frac * 100)
+        self._prog_c.itemconfig(self._prog_txt, text=f'{pct} %')
+        self._prog_c.coords(self._prog_txt, w // 2, 11)
 
-    # --- sidebar helpers -----------------------------------------------------
+    # Side bar helpers
     def _update_sidebar(self, name: str, status: str):
         item = self._sb_items.get(name)
         if not item:
             return
         ACTIVE_BG = '#1a1e35'
-        cfg = {
+        cfg = { 
             'waiting': (SURFACE,    MUTED,  '\u25cf', ''),
             'running': (ACTIVE_BG,  AMBER,  '\u25cf', 'RUN'),
             'done':    (ACTIVE_BG,  GREEN,  '\u2714', ' OK'),
@@ -512,7 +677,7 @@ class ResultsDashboard:
         self._canvas.mpl_connect('motion_notify_event', self._on_hover)
 
     def _on_hover(self, event):
-        """Show a styled annotation for the nearest data point under the cursor."""
+        #Annotations for each data point on the charts.
         import numpy as np
 
         ax_map = {
@@ -592,7 +757,7 @@ class ResultsDashboard:
         setattr(self, ann_attr, ann)
         self._canvas.draw_idle()
 
-    # --- live charts ---------------------------------------------------------
+    # Live charts 
     def _update_live_charts(self):
         ax_a, ax_l = self._ax_acc, self._ax_loss
 
@@ -660,7 +825,7 @@ class ResultsDashboard:
         self._fig.tight_layout(pad=2.6)
         self._canvas.draw_idle()
 
-    # --- round table helpers -------------------------------------------------
+    # Round table helpers
     def _refresh_round_table(self, name: str):
         self._round_tree.delete(*self._round_tree.get_children())
         for row in self._round_data.get(name, []):
@@ -674,17 +839,24 @@ class ResultsDashboard:
             self._fmt(row.get('avg_loss')),
             self._fmt(row.get('honest_accuracy')),
             self._fmt(row.get('compromised_accuracy')),
+            self._fmt(row.get('drift_mean')),
+            self._fmt(row.get('drift_std')),
+            self._fmt(row.get('consensus')),
+            self._fmt(row.get('slope')),
+            self._fmt(row.get('r_squared')),
+            row.get('n_flagged', '\u2013'),
         ))
         self._round_tree.see(iid)
 
     def _on_table_select(self, name):
         self._refresh_round_table(name)
 
-    # --- summary helpers -----------------------------------------------------
+    # SUmmary tab helpers
     def _update_sum_row(self, name: str, res: dict):
         iid = self._sum_iids.get(name)
         if not iid:
             return
+        det = res.get('detection', {}) or {}
         self._sum_tree.item(iid, values=(
             name,
             'Failed' if res.get('error') else 'Done',
@@ -692,6 +864,11 @@ class ResultsDashboard:
             self._fmt(res.get('honest_accuracy')),
             self._fmt(res.get('compromised_accuracy')),
             self._fmt(res.get('attack_impact')),
+            det.get('true_positives', '\u2013'),
+            det.get('false_positives', '\u2013'),
+            det.get('true_negatives', '\u2013'),
+            det.get('false_negatives', '\u2013'),
+            det.get('detection_time', '\u2013') if det.get('detection_time') is not None else '\u2013',
             res.get('duration', '-'),
         ))
 
@@ -739,7 +916,299 @@ class ResultsDashboard:
         self._sum_fig.tight_layout(pad=2)
         self._sum_canvas.draw_idle()
 
-    # --- utility -------------------------------------------------------------
+    # Advanced metrics tab (5 charts: drift, consensus, slope, R², flags)
+    def _build_advanced_tab(self, parent):
+        import matplotlib.pyplot as plt
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        from matplotlib.gridspec import GridSpec
+
+        fig = plt.figure(figsize=(12, 7.5))
+        fig.patch.set_facecolor(SURFACE)
+        gs = GridSpec(2, 6, figure=fig, hspace=0.42, wspace=0.65)
+
+        self._adv_ax_drift     = fig.add_subplot(gs[0, 0:2])
+        self._adv_ax_consensus = fig.add_subplot(gs[0, 2:4])
+        self._adv_ax_slope     = fig.add_subplot(gs[0, 4:6])
+        self._adv_ax_r2        = fig.add_subplot(gs[1, 0:3])
+        self._adv_ax_flags     = fig.add_subplot(gs[1, 3:6])
+
+        titles = [
+            (self._adv_ax_drift,     'Drift per Round',            'Drift'),
+            (self._adv_ax_consensus, 'Consensus & Peer Dev',       'Value'),
+            (self._adv_ax_slope,     'Regression Slope',           'Slope'),
+            (self._adv_ax_r2,        'R\u00b2 (Goodness of Fit)',        'R\u00b2'),
+            (self._adv_ax_flags,     'Detection Flags per Round',  'Count'),
+        ]
+        for ax, title, ylabel in titles:
+            ax.set_facecolor(BG)
+            ax.set_title(title, color=HDR_FG, fontsize=10,
+                         fontfamily=FONT_UI, pad=8, fontweight='semibold')
+            ax.set_xlabel('Round', color=DIM, fontsize=8, fontfamily=FONT_UI)
+            ax.set_ylabel(ylabel,  color=DIM, fontsize=8, fontfamily=FONT_UI)
+            ax.tick_params(colors=DIM, labelsize=7)
+            for sp in ax.spines.values():
+                sp.set_edgecolor(BORDER)
+            ax.grid(True, color=BORDER, linestyle='--', linewidth=0.5, alpha=0.9)
+
+        self._adv_fig = fig
+        self._adv_canvas = FigureCanvasTkAgg(fig, master=parent)
+        self._adv_canvas.draw()
+        self._adv_canvas.get_tk_widget().pack(fill='both', expand=True,
+                                               padx=10, pady=(8, 2))
+
+        # Descriptions under each graph
+        desc_frame = self._tk.Frame(parent, bg=SURFACE)
+        desc_frame.pack(fill='x', padx=14, pady=(0, 2))
+        descriptions = [
+            ('Drift',
+             'Mean parameter drift \u00b1 std dev across all nodes.'),
+            ('Consensus',
+             'Global agreement score and mean peer deviation.'),
+            ('Slope',
+             'Regression slope of accuracy over a sliding window.'),
+            ('R\u00b2',
+             'Coefficient of determination \u2014 near 1.0 = strong trend.'),
+            ('Flags',
+             'Number of nodes flagged as anomalous each round.'),
+        ]
+        for title, desc in descriptions:
+            d = self._tk.Frame(desc_frame, bg=SURFACE)
+            d.pack(side='left', fill='x', expand=True, padx=4)
+            self._tk.Label(d, text=f'{title}:',
+                           font=(FONT_UI, 8, 'bold'),
+                           bg=SURFACE, fg=ACCENT).pack(side='left')
+            self._tk.Label(d, text=f' {desc}',
+                           font=(FONT_UI, 7),
+                           bg=SURFACE, fg=DIM, wraplength=200,
+                           justify='left').pack(side='left', fill='x')
+
+        # Series legend (toggle show/hide, shared with live charts)
+        self._adv_legend_btns: Dict[str, dict] = {}
+        legend_outer = self._tk.Frame(parent, bg=SURFACE)
+        legend_outer.pack(fill='x', padx=10, pady=(2, 6))
+        self._tk.Label(legend_outer, text='SERIES',
+                       font=(FONT_UI, 8, 'bold'), bg=SURFACE, fg=MUTED
+                       ).pack(side='left', padx=(6, 10))
+        legend_scroll = self._tk.Frame(legend_outer, bg=SURFACE)
+        legend_scroll.pack(side='left', fill='x', expand=True)
+        for i, name in enumerate(self.experiment_names):
+            colour = LINE_COLOURS[i % len(LINE_COLOURS)]
+            self._add_adv_legend_btn(legend_scroll, name, colour)
+
+        # Hover annotations for advanced charts
+        self._ann_drift     = None
+        self._ann_consensus = None
+        self._ann_slope     = None
+        self._ann_r2        = None
+        self._ann_flags     = None
+        self._adv_hover_data: Dict = {}
+        self._adv_canvas.mpl_connect('motion_notify_event', self._on_adv_hover)
+
+    def _add_adv_legend_btn(self, parent, name: str, colour: str):
+        """One clickable swatch + label for the advanced-tab series legend."""
+        tk = self._tk
+        is_visible = name not in self._hidden_exps
+        container = tk.Frame(parent, bg=SURFACE, padx=4, pady=2, cursor='hand2')
+        container.pack(side='left', padx=2)
+        sw = tk.Canvas(container, width=12, height=12,
+                       bg=SURFACE, highlightthickness=0)
+        sw.pack(side='left', padx=(0, 4))
+        rect_id = sw.create_rectangle(1, 1, 11, 11,
+                                       fill=colour if is_visible else MUTED,
+                                       outline='')
+        lbl = tk.Label(container, text=name[:20],
+                       font=(FONT_UI, 9), bg=SURFACE,
+                       fg=FG if is_visible else MUTED)
+        lbl.pack(side='left')
+
+        def _toggle(event, n=name):
+            self._toggle_series(n)
+        for widget in (container, sw, lbl):
+            widget.bind('<Button-1>', _toggle)
+
+        self._adv_legend_btns[name] = {
+            'container': container, 'swatch': sw,
+            'rect_id': rect_id, 'label': lbl, 'colour': colour,
+        }
+
+    def _on_adv_hover(self, event):
+        """Hover tooltip for advanced metrics charts."""
+        ax_map = {
+            self._adv_ax_drift:     ('_ann_drift',     '{:.4f}', 'Drift'),
+            self._adv_ax_consensus: ('_ann_consensus', '{:.4f}', 'Value'),
+            self._adv_ax_slope:     ('_ann_slope',     '{:.6f}', 'Slope'),
+            self._adv_ax_r2:        ('_ann_r2',        '{:.4f}', 'R\u00b2'),
+            self._adv_ax_flags:     ('_ann_flags',     '{:.0f}', 'Flagged'),
+        }
+        if event.inaxes not in ax_map:
+            return
+
+        ax = event.inaxes
+        ann_attr, fmt, metric = ax_map[ax]
+        data_series = self._adv_hover_data.get(id(ax), [])
+        if not data_series:
+            return
+
+        best_dist = float('inf')
+        best_x = best_y = best_label = best_colour = None
+
+        try:
+            xy_disp = ax.transData.transform
+            cx, cy = xy_disp((event.xdata, event.ydata))
+            for xs, ys, label, colour in data_series:
+                for x, y in zip(xs, ys):
+                    px, py = xy_disp((x, y))
+                    dist = ((px - cx) ** 2 + (py - cy) ** 2) ** 0.5
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_x, best_y = x, y
+                        best_label = label
+                        best_colour = colour
+        except Exception:
+            return
+
+        SNAP_PX = 22
+        old = getattr(self, ann_attr, None)
+        if old is not None:
+            try:
+                old.remove()
+            except Exception:
+                pass
+            setattr(self, ann_attr, None)
+
+        if best_dist > SNAP_PX:
+            self._adv_canvas.draw_idle()
+            return
+
+        text = f"{best_label}\nRound {int(best_x)}\n{metric}: {fmt.format(best_y)}"
+        ann = ax.annotate(
+            text,
+            xy=(best_x, best_y),
+            xytext=(14, 14),
+            textcoords='offset points',
+            fontsize=8,
+            fontfamily=FONT_UI,
+            color=HDR_FG,
+            bbox=dict(boxstyle='round,pad=0.5', facecolor=CARD,
+                      edgecolor=best_colour, linewidth=1.5, alpha=0.97),
+            arrowprops=dict(arrowstyle='->', color=best_colour, lw=1.2),
+            zorder=10,
+        )
+        setattr(self, ann_attr, ann)
+        self._adv_canvas.draw_idle()
+
+    def _update_advanced_charts(self):
+        import numpy as np
+
+        axes = [self._adv_ax_drift, self._adv_ax_consensus,
+                self._adv_ax_slope, self._adv_ax_r2, self._adv_ax_flags]
+
+        # Invalidate hover annotations before clearing
+        for attr in ('_ann_drift', '_ann_consensus', '_ann_slope',
+                     '_ann_r2', '_ann_flags'):
+            setattr(self, attr, None)
+        self._adv_hover_data = {}
+
+        for ax in axes:
+            ax.cla()
+            ax.set_facecolor(BG)
+            ax.tick_params(colors=DIM, labelsize=7)
+            for sp in ax.spines.values():
+                sp.set_edgecolor(BORDER)
+            ax.grid(True, color=BORDER, linestyle='--', linewidth=0.5, alpha=0.9)
+
+        titles = [
+            (self._adv_ax_drift,     'Drift per Round',            'Drift'),
+            (self._adv_ax_consensus, 'Consensus & Peer Dev',       'Value'),
+            (self._adv_ax_slope,     'Regression Slope',           'Slope'),
+            (self._adv_ax_r2,        'R\u00b2 (Goodness of Fit)',        'R\u00b2'),
+            (self._adv_ax_flags,     'Detection Flags per Round',  'Count'),
+        ]
+        for ax, title, ylabel in titles:
+            ax.set_title(title, color=HDR_FG, fontsize=10,
+                         fontfamily=FONT_UI, pad=8, fontweight='semibold')
+            ax.set_xlabel('Round', color=DIM, fontsize=8)
+            ax.set_ylabel(ylabel,  color=DIM, fontsize=8)
+
+        for i, name in enumerate(self.experiment_names):
+            mdata = self._metrics_data.get(name, [])
+            if not mdata:
+                continue
+            if name in self._hidden_exps:
+                continue
+            c     = LINE_COLOURS[i % len(LINE_COLOURS)]
+            short = name[:22]
+            rs    = [d['round'] for d in mdata]
+
+            # Drift: mean line + std line + shaded band
+            drift_mean = [d.get('drift_mean', 0) for d in mdata]
+            drift_std  = [d.get('drift_std', 0)  for d in mdata]
+            self._adv_ax_drift.plot(rs, drift_mean, color=c, lw=1.6,
+                                     label=f'{short} mean',
+                                     marker='o', markersize=2.5)
+            self._adv_ax_drift.plot(rs, drift_std, color=c, lw=1.0,
+                                     linestyle='--', alpha=0.7,
+                                     label=f'{short} std')
+            dm_arr = np.array(drift_mean)
+            ds_arr = np.array(drift_std)
+            self._adv_ax_drift.fill_between(rs, dm_arr - ds_arr,
+                                             dm_arr + ds_arr,
+                                             color=c, alpha=0.10)
+            self._adv_hover_data.setdefault(
+                id(self._adv_ax_drift), []).append(
+                    (rs, drift_mean, f'{short} mean', c))
+
+            # Consensus + peer deviation
+            consensus = [d.get('consensus', 0)    for d in mdata]
+            peer_dev  = [d.get('peer_dev_mean', 0) for d in mdata]
+            self._adv_ax_consensus.plot(
+                rs, consensus, color=c, lw=1.6,
+                label=f'{short} consensus', marker='o', markersize=2.5)
+            self._adv_ax_consensus.plot(
+                rs, peer_dev, color=c, lw=1.0,
+                linestyle='--', alpha=0.6, label=f'{short} peer dev')
+            self._adv_hover_data.setdefault(
+                id(self._adv_ax_consensus), []).append(
+                    (rs, consensus, f'{short} consensus', c))
+
+            # Slope (own chart)
+            slopes = [d.get('slope', 0) for d in mdata]
+            self._adv_ax_slope.plot(
+                rs, slopes, color=c, lw=1.6,
+                label=short, marker='o', markersize=2.5)
+            self._adv_hover_data.setdefault(
+                id(self._adv_ax_slope), []).append(
+                    (rs, slopes, short, c))
+
+            # R² (own chart)
+            r_sqs = [d.get('r_squared', 0) for d in mdata]
+            self._adv_ax_r2.plot(
+                rs, r_sqs, color=c, lw=1.6,
+                label=short, marker='o', markersize=2.5)
+            self._adv_ax_r2.set_ylim(-0.05, 1.1)
+            self._adv_hover_data.setdefault(
+                id(self._adv_ax_r2), []).append(
+                    (rs, r_sqs, short, c))
+
+            # Detection flags count
+            n_flagged = [d.get('n_flagged', 0) for d in mdata]
+            self._adv_ax_flags.plot(
+                rs, n_flagged, color=c, lw=1.6,
+                label=short, marker='o', markersize=2.5)
+            self._adv_hover_data.setdefault(
+                id(self._adv_ax_flags), []).append(
+                    (rs, n_flagged, short, c))
+
+        for ax in axes:
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                ax.legend(fontsize=7, facecolor=CARD, edgecolor=BORDER,
+                          labelcolor=FG, loc='best', framealpha=0.92)
+
+        self._adv_fig.tight_layout(pad=2.4)
+        self._adv_canvas.draw_idle()
+
+    # Utility
     def _fmt(self, val):
         if val is None:
             return '\u2013'

@@ -18,8 +18,8 @@ from model_variants import get_model_variant
 class SimulationConfig: 
 
     dataset: str = "femnist"
-    num_nodes: int = 8 
-    num_rounds: int = 20 
+    num_nodes: int = 32 
+    num_rounds: int = 50 
     local_epochs: int = 1 
     batch_size: int = 128 
     learning_rate: float = 0.01 
@@ -551,8 +551,22 @@ class DecentralisedSimulator:
             "losses": [],
             "acceptance_rates": [],
             "honest_accuracies": [],
-            "compromised_accuracies": []
+            "compromised_accuracies": [],
+            # --- Advanced metrics ---
+            "drift_per_round": [],               # {mean, std, per_node}
+            "peer_deviation_per_round": [],       # {mean, per_node}
+            "consensus_score_per_round": [],      # float
+            "regression_slope_per_round": [],     # {slope, r_squared}
+            "detection_flags_per_round": [],      # [{node_id, drift, z_score, anomaly_score, flagged}]
+            "overhead_time": {"with_detection": [], "without_detection": []},
         }
+        # Confusion-matrix accumulators
+        self._detection_tp = 0
+        self._detection_fp = 0
+        self._detection_tn = 0
+        self._detection_fn = 0
+        self._detection_time = None   # first round a compromised node is correctly flagged
+        self._previous_states = None  # previous-round model states for drift
     
     def _set_seed(self):
         """Set random seeds."""
@@ -633,6 +647,96 @@ class DecentralisedSimulator:
         print(f"   Topology: {self.config.topology}")
         print(f"   Aggregation: {self.config.aggregation}")
 
+    # ------------------------------------------------------------------
+    #  Advanced per-round metrics
+    # ------------------------------------------------------------------
+
+    def _compute_drift(self, current_states, previous_states):
+        """L2 norm of parameter change per node between consecutive rounds."""
+        drifts = []
+        for curr, prev in zip(current_states, previous_states):
+            diff_norm_sq = 0.0
+            for key in curr.keys():
+                diff = curr[key].float() - prev[key].float()
+                diff_norm_sq += torch.sum(diff * diff).item()
+            drifts.append(float(np.sqrt(diff_norm_sq)))
+        return drifts
+
+    def _compute_peer_deviation(self, all_states):
+        """Mean L2 distance of each node to its neighbours; global consensus."""
+        deviations = []
+        for node_idx in range(self.config.num_nodes):
+            neighbors = self.graph.get_neighbors(node_idx)
+            own = all_states[node_idx]
+            dists = []
+            for n_idx in neighbors:
+                d = 0.0
+                for key in own.keys():
+                    diff = own[key].float() - all_states[n_idx][key].float()
+                    d += torch.sum(diff * diff).item()
+                dists.append(float(np.sqrt(d)))
+            deviations.append(float(np.mean(dists)) if dists else 0.0)
+        mean_dev = float(np.mean(deviations))
+        consensus = 1.0 / (1.0 + mean_dev)
+        return deviations, consensus
+
+    def _compute_regression_slope(self, values, window=10):
+        """OLS slope + R² over the last *window* entries."""
+        if len(values) < 2:
+            return 0.0, 0.0
+        w = values[-window:]
+        n = len(w)
+        x = np.arange(n, dtype=float)
+        y = np.array(w, dtype=float)
+        x_m, y_m = np.mean(x), np.mean(y)
+        ss_xy = float(np.sum((x - x_m) * (y - y_m)))
+        ss_xx = float(np.sum((x - x_m) ** 2))
+        ss_yy = float(np.sum((y - y_m) ** 2))
+        if ss_xx == 0:
+            return 0.0, 0.0
+        slope = ss_xy / ss_xx
+        r_sq = (ss_xy ** 2) / (ss_xx * ss_yy) if ss_yy != 0 else 0.0
+        return float(slope), float(r_sq)
+
+    def _detect_anomalies(self, drifts, round_num):
+        """Z-score based anomaly detection; returns per-node flag dicts."""
+        if not drifts or len(drifts) < 2:
+            return []
+        mean_d = float(np.mean(drifts))
+        std_d = float(np.std(drifts))
+        flags = []
+        for node_id, drift in enumerate(drifts):
+            z = (drift - mean_d) / std_d if std_d > 1e-12 else 0.0
+            anomaly_score = float(abs(z))
+            flagged = anomaly_score > 2.0  # 2-sigma threshold
+            flags.append({
+                "node_id": node_id,
+                "drift": float(drift),
+                "z_score": float(z),
+                "anomaly_score": anomaly_score,
+                "flagged": flagged,
+            })
+        return flags
+
+    def _update_confusion_matrix(self, flags, round_num):
+        """Compare flagged nodes against ground-truth compromised set."""
+        if not self.attacker or not flags:
+            return
+        for f in flags:
+            nid = f["node_id"]
+            is_compromised = self.attacker.is_compromised(nid)
+            is_flagged = f["flagged"]
+            if is_compromised and is_flagged:
+                self._detection_tp += 1
+                if self._detection_time is None:
+                    self._detection_time = round_num
+            elif not is_compromised and is_flagged:
+                self._detection_fp += 1
+            elif is_compromised and not is_flagged:
+                self._detection_fn += 1
+            else:
+                self._detection_tn += 1
+
     def _print_results_table_header(self):
         """Print round metrics table header."""
         if self.attacker:
@@ -653,18 +757,78 @@ class DecentralisedSimulator:
         
         # Initial evaluation
         self._evaluate_round(0)
+
+        # Store initial states for drift computation
+        self._previous_states = [node.get_model_state() for node in self.nodes]
         
         # Training rounds
         for round_num in range(1, self.config.num_rounds + 1):
-            # Local training
+            # --- Local training ---
             for node in self.nodes:
                 node.train_local()
             
-            # Aggregation
+            # --- Aggregation (timed without detection) ---
+            t_agg_start = time.time()
             self._aggregation_round(round_num)
-            
-            # Evaluation
+            t_agg_end = time.time()
+            time_without_detection = t_agg_end - t_agg_start
+
+            # --- Collect current model states ---
+            current_states = [node.get_model_state() for node in self.nodes]
+
+            # --- Drift computation ---
+            drifts = self._compute_drift(current_states, self._previous_states)
+            mean_drift = float(np.mean(drifts))
+            std_drift = float(np.std(drifts))
+            self.results["drift_per_round"].append({
+                "mean": mean_drift, "std": std_drift, "per_node": drifts
+            })
+
+            # --- Peer deviation + consensus ---
+            peer_devs, consensus = self._compute_peer_deviation(current_states)
+            self.results["peer_deviation_per_round"].append({
+                "mean": float(np.mean(peer_devs)), "per_node": peer_devs
+            })
+            self.results["consensus_score_per_round"].append(consensus)
+
+            # --- Evaluation (populates accuracies for this round) ---
             self._evaluate_round(round_num)
+
+            # --- Linear regression slope (over accumulated avg accuracies) ---
+            avg_accs = [float(np.mean(a)) for a in self.results["accuracies"]]
+            slope, r_sq = self._compute_regression_slope(avg_accs, window=10)
+            self.results["regression_slope_per_round"].append({
+                "slope": slope, "r_squared": r_sq
+            })
+
+            # --- Anomaly detection (timed) ---
+            t_det_start = time.time()
+            flags = self._detect_anomalies(drifts, round_num)
+            self._update_confusion_matrix(flags, round_num)
+            t_det_end = time.time()
+            detection_overhead = t_det_end - t_det_start
+            self.results["detection_flags_per_round"].append(flags)
+
+            # --- Overhead time ---
+            time_with_detection = time_without_detection + detection_overhead
+            self.results["overhead_time"]["without_detection"].append(
+                time_without_detection)
+            self.results["overhead_time"]["with_detection"].append(
+                time_with_detection)
+
+            # --- Structured metrics line (parsed by run_experiments.py) ---
+            n_flagged = sum(1 for f in flags if f["flagged"]) if flags else 0
+            print(
+                f"METRICS|{round_num}|{mean_drift:.6f}|{std_drift:.6f}"
+                f"|{float(np.mean(peer_devs)):.6f}|{consensus:.6f}"
+                f"|{slope:.6f}|{r_sq:.6f}"
+                f"|{n_flagged}|{self._detection_tp}|{self._detection_fp}"
+                f"|{self._detection_tn}|{self._detection_fn}"
+                f"|{time_without_detection:.6f}|{time_with_detection:.6f}"
+            )
+
+            # Store current states for next round's drift
+            self._previous_states = current_states
         
         # Final summary
         self._print_summary()
@@ -756,6 +920,36 @@ class DecentralisedSimulator:
             print(f"Honest Nodes: {honest_acc:.4f}")
             print(f"Compromised Nodes: {comp_acc:.4f}")
             print(f"Attack Impact: {honest_acc - comp_acc:.4f}")
+
+        # --- Advanced metrics summary ---
+        if self.results["drift_per_round"]:
+            last_drift = self.results["drift_per_round"][-1]
+            print(f"\nDrift (last round):  mean={last_drift['mean']:.6f}  std={last_drift['std']:.6f}")
+
+        if self.results["consensus_score_per_round"]:
+            print(f"Consensus Score:     {self.results['consensus_score_per_round'][-1]:.6f}")
+
+        if self.results["regression_slope_per_round"]:
+            last_reg = self.results["regression_slope_per_round"][-1]
+            print(f"Regression Slope:    slope={last_reg['slope']:.6f}  R²={last_reg['r_squared']:.6f}")
+
+        if self.attacker:
+            print(f"\nDetection Metrics:")
+            print(f"  True Positives:   {self._detection_tp}")
+            print(f"  False Positives:  {self._detection_fp}")
+            print(f"  True Negatives:   {self._detection_tn}")
+            print(f"  False Negatives:  {self._detection_fn}")
+            if self._detection_time is not None:
+                print(f"  Detection Time:   T_detect = round {self._detection_time}")
+            else:
+                print(f"  Detection Time:   not detected")
+
+        if self.results["overhead_time"]["with_detection"]:
+            avg_wo = float(np.mean(self.results["overhead_time"]["without_detection"]))
+            avg_w  = float(np.mean(self.results["overhead_time"]["with_detection"]))
+            print(f"\nOverhead (avg per round):")
+            print(f"  Without detection: {avg_wo:.4f}s")
+            print(f"  With detection:    {avg_w:.4f}s")
     
     def save_results(self, filepath: str):
         """Save results to JSON with run timestamp and per-round table."""
@@ -783,6 +977,25 @@ class DecentralisedSimulator:
                     else None
                 ),
             }
+            # Advanced metrics (only exist for r >= 1)
+            adv_idx = r - 1
+            if adv_idx >= 0 and adv_idx < len(self.results["drift_per_round"]):
+                dr = self.results["drift_per_round"][adv_idx]
+                row["drift_mean"] = dr["mean"]
+                row["drift_std"]  = dr["std"]
+            if adv_idx >= 0 and adv_idx < len(self.results["peer_deviation_per_round"]):
+                row["peer_deviation_mean"] = self.results["peer_deviation_per_round"][adv_idx]["mean"]
+            if adv_idx >= 0 and adv_idx < len(self.results["consensus_score_per_round"]):
+                row["consensus_score"] = self.results["consensus_score_per_round"][adv_idx]
+            if adv_idx >= 0 and adv_idx < len(self.results["regression_slope_per_round"]):
+                reg = self.results["regression_slope_per_round"][adv_idx]
+                row["regression_slope"] = reg["slope"]
+                row["regression_r_squared"] = reg["r_squared"]
+            if adv_idx >= 0 and adv_idx < len(self.results["detection_flags_per_round"]):
+                row["detection_flags"] = self.results["detection_flags_per_round"][adv_idx]
+            if adv_idx >= 0 and adv_idx < len(self.results["overhead_time"]["without_detection"]):
+                row["time_without_detection"] = self.results["overhead_time"]["without_detection"][adv_idx]
+                row["time_with_detection"]    = self.results["overhead_time"]["with_detection"][adv_idx]
             round_results.append(row)
 
         final_accs = self.results["accuracies"][-1]
@@ -802,6 +1015,25 @@ class DecentralisedSimulator:
                       - self.results["compromised_accuracies"][-1])
                 if self.attacker else None
             ),
+            # Detection confusion matrix
+            "detection": {
+                "true_positives":  self._detection_tp,
+                "false_positives": self._detection_fp,
+                "true_negatives":  self._detection_tn,
+                "false_negatives": self._detection_fn,
+                "detection_time":  self._detection_time,
+            } if self.attacker else None,
+            # Overhead timing
+            "overhead_avg": {
+                "without_detection": (
+                    float(np.mean(self.results["overhead_time"]["without_detection"]))
+                    if self.results["overhead_time"]["without_detection"] else None
+                ),
+                "with_detection": (
+                    float(np.mean(self.results["overhead_time"]["with_detection"]))
+                    if self.results["overhead_time"]["with_detection"] else None
+                ),
+            },
         }
 
         output = {
@@ -841,7 +1073,7 @@ class DecentralisedSimulator:
 
 """Command line interface for running simulations."""
 
-DATASETS     = ["femnist", "celeba", "shakespeare", "reddit"]
+DATASETS     = ["femnist", "shakespeare"]
 AGGREGATORS  = ["fedavg", "balance", "sketchguard", "ubar"]
 TOPOLOGIES   = ["ring", "fully", "k-regular"]
 
@@ -855,7 +1087,7 @@ def _interactive_config() -> dict:
     print("\nDataset:")
     for i, d in enumerate(DATASETS, 1):
         print(f"  {i}. {d}")
-    ds_idx = int(input("Choose dataset (1-4) [default 1]: ").strip() or "1") - 1
+    ds_idx = int(input(f"Choose dataset (1-{len(DATASETS)}) [default 1]: ").strip() or "1") - 1
     dataset = DATASETS[max(0, min(ds_idx, len(DATASETS) - 1))]
 
     print("\nAggregation algorithm:")
@@ -870,8 +1102,8 @@ def _interactive_config() -> dict:
     tp_idx = int(input("Choose topology (1-3) [default 1]: ").strip() or "1") - 1
     topology = TOPOLOGIES[max(0, min(tp_idx, len(TOPOLOGIES) - 1))]
 
-    num_nodes    = int(input("Number of nodes        [default 8]:  ").strip() or "8")
-    num_rounds   = int(input("Number of rounds       [default 20]: ").strip() or "20")
+    num_nodes    = int(input("Number of nodes        [default 32]: ").strip() or "32")
+    num_rounds   = int(input("Number of rounds       [default 50]: ").strip() or "50")
     attack_ratio = float(input("Attack ratio 0.0-0.5   [default 0.0]:  ").strip() or "0.0")
 
     from datetime import datetime as _dt
@@ -892,9 +1124,9 @@ def main():
 
     # Basic parameters
     parser.add_argument("--dataset", type=str, default=None,
-                        choices=["femnist", "celeba", "shakespeare", "reddit"])
-    parser.add_argument("--num-nodes", type=int, default=8)
-    parser.add_argument("--rounds", type=int, default=20)
+                        choices=["femnist", "shakespeare"])
+    parser.add_argument("--num-nodes", type=int, default=32)
+    parser.add_argument("--rounds", type=int, default=50)
     parser.add_argument("--local-epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=0.01)

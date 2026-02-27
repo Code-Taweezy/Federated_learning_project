@@ -19,6 +19,16 @@ ROUND_RE = re.compile(
     r'(?:\s*\|\s*([\d.]+)\s*\|\s*([\d.]+))?'
 )
 
+# Matches a METRICS|... structured line emitted after each round
+METRICS_RE = re.compile(
+    r'^METRICS\|(\d+)\|'                          # round
+    r'([\d.eE+-]+)\|([\d.eE+-]+)\|'               # drift_mean | drift_std
+    r'([\d.eE+-]+)\|([\d.eE+-]+)\|'               # peer_dev_mean | consensus
+    r'([\d.eE+-]+)\|([\d.eE+-]+)\|'               # slope | r_squared
+    r'(\d+)\|(\d+)\|(\d+)\|(\d+)\|(\d+)\|'        # n_flagged | tp | fp | tn | fn
+    r'([\d.eE+-]+)\|([\d.eE+-]+)'                 # time_without | time_with
+)
+
 
 """ EXPERIMENT CONFIGURATIONS"""
 
@@ -29,8 +39,8 @@ class Experiment:
         self.name = name
         # Defaults
         self.dataset = kwargs.get('dataset', 'femnist')
-        self.num_nodes = kwargs.get('num_nodes', 8)
-        self.rounds = kwargs.get('rounds', 20)
+        self.num_nodes = kwargs.get('num_nodes', 32)
+        self.rounds = kwargs.get('rounds', 50)
         self.topology = kwargs.get('topology', 'ring')
         self.aggregation = kwargs.get('aggregation', 'fedavg')
         self.attack_ratio = kwargs.get('attack_ratio', 0.0)
@@ -59,40 +69,40 @@ class Experiment:
 """EXPERIMENT SUITES"""
 
 
-# Suite 1: Baseline (Quick Test - 5-10 min)
+# Suite 1: Baseline (Quick Test)
 BASELINE_SUITE = [
     Experiment('baseline_no_attack', 
                aggregation='fedavg', 
                attack_ratio=0.0, 
-               rounds=10),
+               rounds=50),
     
     Experiment('baseline_with_attack', 
                aggregation='fedavg', 
                attack_ratio=0.25, 
-               rounds=10),
+               rounds=50),
 ]
 
-# Suite 2: Algorithm Comparison (Main Test - 60-90 min)
+# Suite 2: Algorithm Comparison (Main Test)
 ALGORITHM_SUITE = [
     Experiment('fedavg', 
                aggregation='fedavg', 
                attack_ratio=0.25,
-               rounds=20),
+               rounds=50),
     
     Experiment('balance', 
                aggregation='balance', 
                attack_ratio=0.25,
-               rounds=20),
+               rounds=50),
     
     Experiment('sketchguard', 
                aggregation='sketchguard', 
                attack_ratio=0.25,
-               rounds=20),
+               rounds=50),
     
     Experiment('ubar', 
                aggregation='ubar', 
                attack_ratio=0.25,
-               rounds=20),
+               rounds=50),
 ]
 
 # Suite 3: Topology Comparison (30-45 min)
@@ -123,44 +133,28 @@ DEBUG_SUITE = [
                aggregation='fedavg'),
 ]
 
-# Suite 7: Shakespeare Dataset - Algorithm Comparison (~75-90 min)
+# Suite 5: Shakespeare Dataset - Algorithm Comparison
 SHAKESPEARE_SUITE = [
     Experiment('shakespeare_fedavg',
                dataset='shakespeare', aggregation='fedavg',
-               attack_ratio=0.25, rounds=20),
+               attack_ratio=0.25, rounds=50),
     Experiment('shakespeare_balance',
                dataset='shakespeare', aggregation='balance',
-               attack_ratio=0.25, rounds=20),
+               attack_ratio=0.25, rounds=50),
     Experiment('shakespeare_sketchguard',
                dataset='shakespeare', aggregation='sketchguard',
-               attack_ratio=0.25, rounds=20),
+               attack_ratio=0.25, rounds=50),
     Experiment('shakespeare_ubar',
                dataset='shakespeare', aggregation='ubar',
-               attack_ratio=0.25, rounds=20),
+               attack_ratio=0.25, rounds=50),
 ]
 
-# Suite 8: Reddit Dataset - Algorithm Comparison (~75-90 min)
-REDDIT_SUITE = [
-    Experiment('reddit_fedavg',
-               dataset='reddit', aggregation='fedavg',
-               attack_ratio=0.25, rounds=20),
-    Experiment('reddit_balance',
-               dataset='reddit', aggregation='balance',
-               attack_ratio=0.25, rounds=20),
-    Experiment('reddit_sketchguard',
-               dataset='reddit', aggregation='sketchguard',
-               attack_ratio=0.25, rounds=20),
-    Experiment('reddit_ubar',
-               dataset='reddit', aggregation='ubar',
-               attack_ratio=0.25, rounds=20),
-]
-
-# Suite 7: Cross-Dataset Comparison  – built dynamically (see _build_cross_dataset_suite)
+# Suite 6: Cross-Dataset Comparison  – built dynamically (see _build_cross_dataset_suite)
 def _build_cross_dataset_suite(attack_ratio: float = 0.25,
                                attack_type: str = 'directed',
                                topology: str = 'ring') -> List[Experiment]:
-    """FedAvg, BALANCE and UBAR across all 4 datasets (12 experiments)."""
-    datasets     = ['femnist', 'celeba', 'shakespeare', 'reddit']
+    """FedAvg, BALANCE and UBAR across femnist and shakespeare (6 experiments)."""
+    datasets     = ['femnist', 'shakespeare']
     aggregators  = ['fedavg', 'balance', 'ubar']
     experiments  = []
     for ds in datasets:
@@ -172,7 +166,7 @@ def _build_cross_dataset_suite(attack_ratio: float = 0.25,
                 attack_ratio=attack_ratio,
                 attack_type=attack_type,
                 topology=topology,
-                rounds=15,
+                rounds=50,
             ))
     return experiments
 
@@ -257,20 +251,50 @@ class ExperimentRunner:
                 bufsize=1,
             )
 
+            # Buffer for pending metrics line (arrives right after the round row)
+            _pending_metrics = {}
+
             for line in proc.stdout:
                 line_stripped = line.rstrip()
                 print(line_stripped)
                 if dashboard:
+                    # Try METRICS line first (emitted right after the round row)
+                    mm = METRICS_RE.match(line_stripped)
+                    if mm:
+                        rnd = int(mm.group(1))
+                        _pending_metrics[rnd] = {
+                            "drift_mean":        float(mm.group(2)),
+                            "drift_std":         float(mm.group(3)),
+                            "peer_dev_mean":     float(mm.group(4)),
+                            "consensus":         float(mm.group(5)),
+                            "slope":             float(mm.group(6)),
+                            "r_squared":         float(mm.group(7)),
+                            "n_flagged":         int(mm.group(8)),
+                            "tp":                int(mm.group(9)),
+                            "fp":                int(mm.group(10)),
+                            "tn":                int(mm.group(11)),
+                            "fn":                int(mm.group(12)),
+                            "time_without_det":  float(mm.group(13)),
+                            "time_with_det":     float(mm.group(14)),
+                        }
+                        # If the round row was already sent, send a metrics-only update
+                        dashboard.notify_metrics(exp.name, rnd, _pending_metrics[rnd])
+                        continue
+
                     m = ROUND_RE.match(line_stripped)
                     if m:
+                        rnd = int(m.group(1))
                         row = {
-                            "round":                int(m.group(1)),
+                            "round":                rnd,
                             "avg_accuracy":         float(m.group(2)),
                             "std_accuracy":         float(m.group(3)),
                             "avg_loss":             float(m.group(4)),
                             "honest_accuracy":      float(m.group(5)) if m.group(5) else None,
                             "compromised_accuracy": float(m.group(6)) if m.group(6) else None,
                         }
+                        # Merge any pre-received metrics (shouldn't happen, but be safe)
+                        if rnd in _pending_metrics:
+                            row.update(_pending_metrics.pop(rnd))
                         dashboard.notify_round(exp.name, row)
 
             proc.wait()
@@ -367,25 +391,22 @@ def print_menu():
     print("\nFEDERATED LEARNING EXPERIMENT RUNNER")
     print("\nAvailable Experiment Suites:\n")
     print("  1. BASELINE SUITE")
-    print("     - 2 experiments, ~10-15 min")
+    print("     - 2 experiments (32 nodes, 50 rounds)")
     print("     - FedAvg no-attack vs directed-attack baseline\n")
     print("  2. ALGORITHM COMPARISON")
-    print("     - 4 experiments, ~60-90 min")
+    print("     - 4 experiments (32 nodes, 50 rounds)")
     print("     - FedAvg vs BALANCE vs Sketchguard vs UBAR  (femnist)\n")
     print("  3. TOPOLOGY COMPARISON")
-    print("     - 3 experiments, ~30-45 min")
+    print("     - 3 experiments (32 nodes, 50 rounds)")
     print("     - Ring vs k-regular vs fully-connected\n")
     print("  4. SHAKESPEARE DATASET")
-    print("     - 4 experiments, ~75-90 min")
+    print("     - 4 experiments (32 nodes, 50 rounds)")
     print("     - Algorithm comparison on Shakespeare (character-level LSTM)\n")
-    print("  5. REDDIT DATASET")
-    print("     - 4 experiments, ~75-90 min")
-    print("     - Algorithm comparison on Reddit (word-level LSTM)\n")
-    print("  6. CROSS-DATASET COMPARISON")
-    print("     - 12 experiments, ~120-180 min")
-    print("     - FedAvg / BALANCE / UBAR across femnist, celeba, shakespeare, reddit")
+    print("  5. CROSS-DATASET COMPARISON")
+    print("     - 6 experiments (32 nodes, 50 rounds)")
+    print("     - FedAvg / BALANCE / UBAR across femnist and shakespeare")
     print("     - Configurable attack ratio + attack type (dialog shown before launch)\n")
-    print("  7. CUSTOM (define your own)\n")
+    print("  6. CUSTOM (define your own)\n")
     print("  0. Exit\n")
 
 
@@ -413,7 +434,7 @@ def run_custom_suite():
         topology = topo_map.get(topo_choice, 'ring')
 
         attack_ratio = float(input("Attack ratio (0.0-0.5): ").strip() or "0.25")
-        rounds = int(input("Number of rounds (default 20): ").strip() or "20")
+        rounds = int(input("Number of rounds (default 50): ").strip() or "50")
 
         exp = Experiment(name,
                         aggregation=aggregation,
@@ -462,9 +483,16 @@ def _configure_cross_dataset() -> dict:
 
     result = {}
 
+    # Enable DPI awareness for sharp text on high-DPI displays
+    try:
+        from ctypes import windll
+        windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
+
     root = tk.Tk()
     root.title("Configure Cross-Dataset Suite")
-    root.geometry("460x460")
+    root.geometry("500x520")
     root.resizable(False, False)
     root.configure(bg=BG)
 
@@ -486,9 +514,9 @@ def _configure_cross_dataset() -> dict:
     def _section_label(text):
         """Styled section heading matching the dashboard's MUTED caps labels."""
         tk.Label(body, text=text.upper(),
-                 font=(FONT_UI, 8, 'bold'), bg=BG, fg=MUTED
-                 ).pack(anchor='w', pady=(10, 4))
-        tk.Frame(body, bg=BORDER, height=1).pack(fill='x', pady=(0, 8))
+                 font=(FONT_UI, 9, 'bold'), bg=BG, fg=MUTED
+                 ).pack(anchor='w', pady=(14, 4))
+        tk.Frame(body, bg=BORDER, height=1).pack(fill='x', pady=(0, 10))
 
     # ── attack ratio slider ───────────────────────────────────────────────────
     _section_label('Attack Ratio')
@@ -498,7 +526,7 @@ def _configure_cross_dataset() -> dict:
 
     ratio_var = tk.DoubleVar(value=0.25)
     ratio_lbl = tk.Label(slider_row, text='0.25', width=5,
-                         font=(FONT_MONO, 11, 'bold'), bg=BG, fg=AMBER)
+                         font=(FONT_MONO, 12, 'bold'), bg=BG, fg=AMBER)
     ratio_lbl.pack(side='right')
 
     def _on_slider(val):
@@ -530,16 +558,16 @@ def _configure_cross_dataset() -> dict:
     ]:
         tk.Radiobutton(
             toggle_row, text=label, variable=type_var, value=value,
-            font=(FONT_UI, 10), bg=BG, fg=colour,
+            font=(FONT_UI, 11), bg=BG, fg=colour,
             selectcolor=CARD, activebackground=BG,
             activeforeground=colour, indicatoron=True,
-        ).pack(side='left', padx=(0, 20))
+        ).pack(side='left', padx=(0, 24))
 
     tk.Label(body,
              text='Directed: push models toward a target class\n'
                   'Gaussian: add noise to gradients',
-             font=(FONT_UI, 8), bg=BG, fg=MUTED, justify='left'
-             ).pack(anchor='w', pady=(6, 2))
+             font=(FONT_UI, 9), bg=BG, fg=MUTED, justify='left'
+             ).pack(anchor='w', pady=(8, 2))
 
     # ── topology selector ─────────────────────────────────────────────────────
     _section_label('Topology')
@@ -555,15 +583,15 @@ def _configure_cross_dataset() -> dict:
     ]:
         tk.Radiobutton(
             topo_row, text=label, variable=topo_var, value=value,
-            font=(FONT_UI, 10), bg=BG, fg=colour,
+            font=(FONT_UI, 11), bg=BG, fg=colour,
             selectcolor=CARD, activebackground=BG,
             activeforeground=colour, indicatoron=True,
-        ).pack(side='left', padx=(0, 16))
+        ).pack(side='left', padx=(0, 20))
 
     tk.Label(body,
              text='Ring: chain  |  k-Regular: k nearest  |  Fully: all connected',
-             font=(FONT_UI, 8), bg=BG, fg=MUTED
-             ).pack(anchor='w', pady=(6, 0))
+             font=(FONT_UI, 9), bg=BG, fg=MUTED
+             ).pack(anchor='w', pady=(8, 0))
 
     # ── buttons (matches dashboard footer style) ───────────────────────────────
     tk.Frame(root, bg=BORDER, height=1).pack(fill='x')
@@ -628,7 +656,7 @@ def main():
     """Main execution."""
     while True:
         print_menu()
-        choice = input("Select suite (0-7): ").strip()
+        choice = input("Select suite (0-6): ").strip()
 
         if choice == '0':
             print("\nGoodbye!\n")
@@ -642,8 +670,6 @@ def main():
         elif choice == '4':
             _run_suite('shakespeare_comparison', SHAKESPEARE_SUITE)
         elif choice == '5':
-            _run_suite('reddit_comparison', REDDIT_SUITE)
-        elif choice == '6':
             cfg = _configure_cross_dataset()
             if cfg:
                 exps = _build_cross_dataset_suite(
@@ -652,7 +678,7 @@ def main():
                     topology=cfg.get('topology', 'ring'),
                 )
                 _run_suite('cross_dataset', exps)
-        elif choice == '7':
+        elif choice == '6':
             custom_exps = run_custom_suite()
             if custom_exps:
                 _run_suite('custom', custom_exps)

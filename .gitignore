@@ -26,3 +26,5 @@ service_account.json
 .secrets/
 
 leaf/
+oracleJdk-25/
+
