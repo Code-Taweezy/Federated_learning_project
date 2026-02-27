@@ -66,10 +66,10 @@ ROUND_COL_TIPS = {
 SUMMARY_COL_TIPS = {
     'Experiment':            'Experiment name / configuration',
     'Status':                'Completion status (Done / Failed)',
-    'Final Accuracy':        'Final global model accuracy',
-    'Honest Accuracy':       'Final accuracy of honest nodes',
-    'Compromised Accuracy':  'Final accuracy of compromised nodes',
-    'Attack Impact':         'Accuracy gap: honest \u2212 compromised',
+    'Final Acc':             'Final global model accuracy',
+    'Honest Acc':            'Final accuracy of honest nodes',
+    'Compr. Acc':            'Final accuracy of compromised nodes',
+    'Atk Impact':            'Accuracy gap: honest \u2212 compromised',
     'TP':                    'True Positives \u2014 compromised nodes correctly flagged',
     'FP':                    'False Positives \u2014 honest nodes incorrectly flagged',
     'TN':                    'True Negatives \u2014 honest nodes correctly not flagged',
@@ -164,18 +164,18 @@ class ResultsDashboard:
                      background=SURFACE, borderwidth=0, tabmargins=[0, 0, 0, 0])
         st.configure('D.TNotebook.Tab',
                      background=CARD, foreground=DIM,
-                     padding=[18, 8], font=(FONT_UI, 10), borderwidth=0)
+                     padding=[14, 5], font=(FONT_UI, 9), borderwidth=0)
         st.map('D.TNotebook.Tab',
                background=[('selected', SURFACE), ('active', '#22274a')],
                foreground=[('selected', HDR_FG),   ('active', FG)])
 
         st.configure('D.Treeview',
                      background=CARD, foreground=FG,
-                     fieldbackground=CARD, rowheight=28,
-                     font=(FONT_MONO, 10), borderwidth=0)
+                     fieldbackground=CARD, rowheight=22,
+                     font=(FONT_MONO, 9), borderwidth=0)
         st.configure('D.Treeview.Heading',
                      background=BORDER, foreground=ACCENT,
-                     font=(FONT_UI, 10, 'bold'), relief='flat')
+                     font=(FONT_UI, 9, 'bold'), relief='flat')
         st.map('D.Treeview', background=[('selected', '#252b50')])
 
         for sname in ('D.Vertical.TScrollbar', 'D.Horizontal.TScrollbar'):
@@ -183,71 +183,71 @@ class ResultsDashboard:
                          arrowcolor=DIM, borderwidth=0, width=8)
 
         # The Header
-        hdr = tk.Frame(root, bg=HDR_BG, height=62)
+        hdr = tk.Frame(root, bg=HDR_BG, height=44)
         hdr.pack(fill='x')
         hdr.pack_propagate(False)
 
         left_hdr = tk.Frame(hdr, bg=HDR_BG)
-        left_hdr.pack(side='left', fill='y', padx=(20, 0))
+        left_hdr.pack(side='left', fill='y', padx=(16, 0))
         tk.Label(left_hdr,
                  text='Federated Learning Dashboard',
-                 font=(FONT_UI, 13, 'bold'), bg=HDR_BG, fg=HDR_FG
-                 ).pack(side='top', anchor='w', pady=(12, 0))
+                 font=(FONT_UI, 11, 'bold'), bg=HDR_BG, fg=HDR_FG
+                 ).pack(side='top', anchor='w', pady=(8, 0))
         tk.Label(left_hdr,
                  text=self.suite_name.replace('_', ' '),
-                 font=(FONT_UI, 9), bg=HDR_BG, fg=DIM
+                 font=(FONT_UI, 8), bg=HDR_BG, fg=DIM
                  ).pack(side='top', anchor='w')
 
         right_hdr = tk.Frame(hdr, bg=HDR_BG)
-        right_hdr.pack(side='right', fill='y', padx=(0, 20))
+        right_hdr.pack(side='right', fill='y', padx=(0, 16))
         tk.Label(right_hdr,
                  text=f"Started  {datetime.now().strftime('%Y-%m-%d  %H:%M:%S')}",
-                 font=(FONT_UI, 9), bg=HDR_BG, fg=DIM
-                 ).pack(side='top', anchor='e', pady=(14, 0))
+                 font=(FONT_UI, 8), bg=HDR_BG, fg=DIM
+                 ).pack(side='top', anchor='e', pady=(10, 0))
         self._ts_lbl = tk.Label(right_hdr, text='',
-                                font=(FONT_UI, 9), bg=HDR_BG, fg=DIM)
+                                font=(FONT_UI, 8), bg=HDR_BG, fg=DIM)
         self._ts_lbl.pack(side='top', anchor='e')
 
         # Progress bar and accent strip
-        tk.Frame(root, bg=ACCENT, height=2).pack(fill='x')
-        self._prog_c = tk.Canvas(root, bg=SURFACE, height=22,
+        tk.Frame(root, bg=ACCENT, height=1).pack(fill='x')
+        self._prog_c = tk.Canvas(root, bg=SURFACE, height=14,
                                  highlightthickness=0)
         self._prog_c.pack(fill='x')
         self._prog_bg = self._prog_c.create_rectangle(
-            0, 0, 4000, 22, fill=BORDER, outline='')
+            0, 0, 4000, 14, fill=BORDER, outline='')
         self._prog_r = self._prog_c.create_rectangle(
-            0, 0, 0, 22, fill=ACCENT, outline='')
+            0, 0, 0, 14, fill=ACCENT, outline='')
         self._prog_txt = self._prog_c.create_text(
-            670, 11, text='0 %', fill=HDR_FG,
-            font=(FONT_UI, 9, 'bold'))
+            670, 7, text='0 %', fill=HDR_FG,
+            font=(FONT_UI, 7, 'bold'))
 
         # Status row
         sr = tk.Frame(root, bg=BG)
-        sr.pack(fill='x', padx=18, pady=(8, 0))
+        sr.pack(fill='x', padx=14, pady=(4, 0))
         tk.Label(sr, text='STATUS',
-                 font=(FONT_UI, 8, 'bold'), bg=BG, fg=MUTED
+                 font=(FONT_UI, 7, 'bold'), bg=BG, fg=MUTED
                  ).pack(side='left')
         self._active_lbl = tk.Label(sr, text='  Initialising\u2026',
-                                    font=(FONT_UI, 10), bg=BG, fg=AMBER)
-        self._active_lbl.pack(side='left', padx=8)
+                                    font=(FONT_UI, 8), bg=BG, fg=AMBER)
+        self._active_lbl.pack(side='left', padx=6)
 
         # Body
         body = tk.Frame(root, bg=BG)
-        body.pack(fill='both', expand=True, pady=(8, 0))
+        body.pack(fill='both', expand=True, pady=(4, 0))
 
         # sidebar
-        sb = tk.Frame(body, bg=SURFACE, width=244)
-        sb.pack(side='left', fill='y', padx=(12, 0), pady=(0, 12))
+        sb = tk.Frame(body, bg=SURFACE, width=200)
+        sb.pack(side='left', fill='y', padx=(8, 0), pady=(0, 8))
         sb.pack_propagate(False)
 
         sb_head = tk.Frame(sb, bg=SURFACE)
-        sb_head.pack(fill='x', padx=14, pady=(14, 6))
+        sb_head.pack(fill='x', padx=10, pady=(8, 4))
         tk.Label(sb_head, text='EXPERIMENTS',
-                 font=(FONT_UI, 8, 'bold'), bg=SURFACE, fg=MUTED
+                 font=(FONT_UI, 7, 'bold'), bg=SURFACE, fg=MUTED
                  ).pack(side='left')
         self._exp_count_lbl = tk.Label(
             sb_head, text=f'0 / {len(self.experiment_names)}',
-            font=(FONT_UI, 8), bg=SURFACE, fg=DIM)
+            font=(FONT_UI, 7), bg=SURFACE, fg=DIM)
         self._exp_count_lbl.pack(side='right')
 
         tk.Frame(sb, bg=BORDER, height=1).pack(fill='x', padx=10)
@@ -257,24 +257,24 @@ class ResultsDashboard:
         self._sb_items: Dict[str, dict] = {}
 
         for name in self.experiment_names:
-            row = tk.Frame(sb_inner, bg=SURFACE, pady=1)
+            row = tk.Frame(sb_inner, bg=SURFACE, pady=0)
             row.pack(fill='x')
             dot = tk.Label(row, text='\u25cf',
-                           font=(FONT_UI, 9), bg=SURFACE, fg=MUTED)
-            dot.pack(side='left', padx=(8, 4))
-            lbl = tk.Label(row, text=name[:28],
-                           font=(FONT_UI, 9), bg=SURFACE, fg=DIM, anchor='w')
+                           font=(FONT_UI, 7), bg=SURFACE, fg=MUTED)
+            dot.pack(side='left', padx=(6, 3))
+            lbl = tk.Label(row, text=name[:24],
+                           font=(FONT_UI, 7), bg=SURFACE, fg=DIM, anchor='w')
             lbl.pack(side='left', fill='x', expand=True)
             ico = tk.Label(row, text='',
-                           font=(FONT_UI, 8, 'bold'), bg=SURFACE, fg=DIM,
-                           width=4)
-            ico.pack(side='right', padx=6)
+                           font=(FONT_UI, 7, 'bold'), bg=SURFACE, fg=DIM,
+                           width=3)
+            ico.pack(side='right', padx=4)
             self._sb_items[name] = {'row': row, 'dot': dot, 'lbl': lbl, 'ico': ico}
 
         # content
         content = tk.Frame(body, bg=BG)
         content.pack(side='left', fill='both', expand=True,
-                     padx=10, pady=(0, 12))
+                     padx=6, pady=(0, 8))
         nb = ttk.Notebook(content, style='D.TNotebook')
         nb.pack(fill='both', expand=True)
         self._nb = nb
@@ -292,7 +292,7 @@ class ResultsDashboard:
     def _build_charts_tab(self, parent):
         import matplotlib.pyplot as plt
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-        fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
+        fig, axes = plt.subplots(1, 2, figsize=(10, 2.8))
         fig.patch.set_facecolor(SURFACE)
         self._ax_acc, self._ax_loss = axes
         for ax, title, ylabel in [
@@ -300,40 +300,42 @@ class ResultsDashboard:
             (self._ax_loss, 'Loss over Rounds',     'Loss'),
         ]:
             ax.set_facecolor(BG)
-            ax.set_title(title, color=HDR_FG, fontsize=11,
-                         fontfamily=FONT_UI, pad=10, fontweight='semibold')
-            ax.set_xlabel('Round',  color=DIM, fontsize=9, fontfamily=FONT_UI)
-            ax.set_ylabel(ylabel,   color=DIM, fontsize=9, fontfamily=FONT_UI)
-            ax.tick_params(colors=DIM)
+            ax.set_title(title, color=HDR_FG, fontsize=9,
+                         fontfamily=FONT_UI, pad=6, fontweight='semibold')
+            ax.set_xlabel('Round',  color=DIM, fontsize=8, fontfamily=FONT_UI)
+            ax.set_ylabel(ylabel,   color=DIM, fontsize=8, fontfamily=FONT_UI)
+            ax.tick_params(colors=DIM, labelsize=8)
             for sp in ax.spines.values(): sp.set_edgecolor(BORDER)
             ax.grid(True, color=BORDER, linestyle='--', linewidth=0.55, alpha=0.9)
-        fig.tight_layout(pad=2.6)
+        fig.tight_layout(pad=2.0)
         self._fig    = fig
-        self._canvas = FigureCanvasTkAgg(fig, master=parent)
-        self._canvas.draw()
-        self._canvas.get_tk_widget().pack(fill='both', expand=True, padx=10, pady=(10, 4))
 
         # hover state
         self._ann_acc   = None
         self._ann_loss  = None
         self._loss_ymax = 0.0
 
-        # Clickable series legend (allows you to hide/show individual graphs on the charts)
+        # Clickable series legend – pack at bottom FIRST so it is always visible
         self._hidden_exps:   set          = set()
         self._hover_data:    Dict         = {}
         self._legend_btns:   Dict[str, dict] = {}
 
         legend_outer = self._tk.Frame(parent, bg=SURFACE)
-        legend_outer.pack(fill='x', padx=10, pady=(0, 8))
+        legend_outer.pack(side='bottom', fill='x', padx=8, pady=(0, 4))
         self._tk.Label(legend_outer, text='SERIES',
-                       font=(FONT_UI, 8, 'bold'), bg=SURFACE, fg=MUTED
-                       ).pack(side='left', padx=(6, 10))
-        legend_scroll = self._tk.Frame(legend_outer, bg=SURFACE)
-        legend_scroll.pack(side='left', fill='x', expand=True)
+                       font=(FONT_UI, 7, 'bold'), bg=SURFACE, fg=MUTED
+                       ).pack(anchor='nw', padx=(6, 0), pady=(2, 0))
+        legend_wrap = self._tk.Frame(legend_outer, bg=SURFACE)
+        legend_wrap.pack(fill='x', expand=True, padx=(4, 0))
 
         for i, name in enumerate(self.experiment_names):
             colour = LINE_COLOURS[i % len(LINE_COLOURS)]
-            self._add_legend_btn(legend_scroll, name, colour)
+            self._add_legend_btn(legend_wrap, name, colour)
+
+        # Chart canvas – fills remaining space above the legend
+        self._canvas = FigureCanvasTkAgg(fig, master=parent)
+        self._canvas.draw()
+        self._canvas.get_tk_widget().pack(fill='both', expand=True, padx=6, pady=(6, 2))
 
         self._setup_hover()
 
@@ -342,18 +344,18 @@ class ResultsDashboard:
         tk = self._tk
         is_visible = name not in self._hidden_exps
 
-        container = tk.Frame(parent, bg=SURFACE, padx=4, pady=2, cursor='hand2')
-        container.pack(side='left', padx=2)
+        container = tk.Frame(parent, bg=SURFACE, padx=2, pady=1, cursor='hand2')
+        container.pack(side='left', padx=1, pady=1)
 
-        sw = tk.Canvas(container, width=12, height=12,
+        sw = tk.Canvas(container, width=8, height=8,
                        bg=SURFACE, highlightthickness=0)
-        sw.pack(side='left', padx=(0, 4))
-        rect_id = sw.create_rectangle(1, 1, 11, 11,
+        sw.pack(side='left', padx=(0, 3))
+        rect_id = sw.create_rectangle(0, 0, 8, 8,
                                        fill=colour if is_visible else MUTED,
                                        outline='')
 
-        lbl = tk.Label(container, text=name[:20],
-                       font=(FONT_UI, 9), bg=SURFACE,
+        lbl = tk.Label(container, text=name[:18],
+                       font=(FONT_UI, 7), bg=SURFACE,
                        fg=FG if is_visible else MUTED)
         lbl.pack(side='left')
 
@@ -441,10 +443,10 @@ class ResultsDashboard:
         cols = (
             'Experiment',
             'Status',
-            'Final Accuracy',
-            'Honest Accuracy',
-            'Compromised Accuracy',
-            'Attack Impact',
+            'Final Acc',
+            'Honest Acc',
+            'Compr. Acc',
+            'Atk Impact',
             'TP',
             'FP',
             'TN',
@@ -454,12 +456,12 @@ class ResultsDashboard:
         )
         self._sum_tree = self._make_tree(
             parent, cols,
-            col_widths={'Experiment': 200, 'Status': 62,
-                        'Final Accuracy': 110, 'Honest Accuracy': 112,
-                        'Compromised Accuracy': 146,
-                        'Attack Impact': 100,
-                        'TP': 44, 'FP': 44, 'TN': 44, 'FN': 44,
-                        'T_detect': 68, 'Duration': 78},
+            col_widths={'Experiment': 170, 'Status': 52,
+                        'Final Acc': 68, 'Honest Acc': 68,
+                        'Compr. Acc': 68,
+                        'Atk Impact': 64,
+                        'TP': 34, 'FP': 34, 'TN': 34, 'FN': 34,
+                        'T_detect': 56, 'Duration': 62},
             height=7)
         self._sum_iids: dict = {}
         for name in self.experiment_names:
@@ -470,7 +472,7 @@ class ResultsDashboard:
         self._bind_tree_tooltips(self._sum_tree, SUMMARY_COL_TIPS)
         cf = tk.Frame(parent, bg=SURFACE)
         cf.pack(fill='both', expand=True, padx=8, pady=6)
-        self._sum_fig, self._sum_axes = plt.subplots(1, 2, figsize=(11, 3.0))
+        self._sum_fig, self._sum_axes = plt.subplots(1, 2, figsize=(10, 2.2))
         self._sum_fig.patch.set_facecolor(SURFACE)
         for ax in self._sum_axes:
             ax.set_facecolor(BG)
@@ -495,7 +497,8 @@ class ResultsDashboard:
         for col in columns:
             w = (col_widths or {}).get(col, col_width)
             tree.heading(col, text=col)
-            tree.column(col, width=w, anchor='center', minwidth=50)
+            tree.column(col, width=w, anchor='center', minwidth=30,
+                        stretch=False)
         vs = ttk.Scrollbar(wrap, orient='vertical', command=tree.yview,
                            style='D.Vertical.TScrollbar')
         hs = ttk.Scrollbar(wrap, orient='horizontal', command=tree.xview,
@@ -568,7 +571,7 @@ class ResultsDashboard:
         tree.bind('<Motion>', _on_motion)
         tree.bind('<Leave>', _cancel)
 
-    # Draining the Queue
+    # Draining the Queue once the program is closed
     def _drain_queue(self):
         try:
             while True:
@@ -645,10 +648,10 @@ class ResultsDashboard:
     def _set_progress(self, frac: float):
         w = self._prog_c.winfo_width() or 1300
         fill_w = int(w * max(0.005, frac))
-        self._prog_c.coords(self._prog_r, 0, 0, fill_w, 22)
+        self._prog_c.coords(self._prog_r, 0, 0, fill_w, 14)
         pct = int(frac * 100)
         self._prog_c.itemconfig(self._prog_txt, text=f'{pct} %')
-        self._prog_c.coords(self._prog_txt, w // 2, 11)
+        self._prog_c.coords(self._prog_txt, w // 2, 7)
 
     # Side bar helpers
     def _update_sidebar(self, name: str, status: str):
@@ -657,6 +660,7 @@ class ResultsDashboard:
             return
         ACTIVE_BG = '#1a1e35'
         cfg = { 
+            #status of each experiment, displayed on the experiment results table in the summary tab
             'waiting': (SURFACE,    MUTED,  '\u25cf', ''),
             'running': (ACTIVE_BG,  AMBER,  '\u25cf', 'RUN'),
             'done':    (ACTIVE_BG,  GREEN,  '\u2714', ' OK'),
@@ -694,7 +698,7 @@ class ResultsDashboard:
         if not data_series:
             return
 
-        # Find closest point across all series (display-coordinate distance)
+        # display-coordinate distance
         best_dist = float('inf')
         best_x = best_y = best_label = best_colour = None
 
@@ -715,7 +719,7 @@ class ResultsDashboard:
         except Exception:
             return
 
-        SNAP_PX = 22  # pixels — only show tooltip if this close
+        SNAP_PX = 22  # pixels
 
         # Remove old annotation regardless
         old = getattr(self, ann_attr, None)
@@ -816,13 +820,13 @@ class ResultsDashboard:
             # Stable loss scale: only ever grows, never shrinks
             ax_l.set_ylim(bottom=0, top=max(self._loss_ymax, 0.5))
             for ax in (ax_a, ax_l):
-                leg = ax.legend(fontsize=8.5,
+                leg = ax.legend(fontsize=7,
                                 facecolor=CARD, edgecolor=BORDER,
                                 labelcolor=FG, loc='best', framealpha=0.92)
                 for line in leg.get_lines():
-                    line.set_linewidth(2.0)
+                    line.set_linewidth(1.6)
 
-        self._fig.tight_layout(pad=2.6)
+        self._fig.tight_layout(pad=2.0)
         self._canvas.draw_idle()
 
     # Round table helpers
@@ -922,9 +926,11 @@ class ResultsDashboard:
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         from matplotlib.gridspec import GridSpec
 
-        fig = plt.figure(figsize=(12, 7.5))
+        fig = plt.figure(figsize=(12, 5.0))
         fig.patch.set_facecolor(SURFACE)
-        gs = GridSpec(2, 6, figure=fig, hspace=0.42, wspace=0.65)
+        gs = GridSpec(2, 6, figure=fig,
+                      hspace=0.50, wspace=0.55,
+                      left=0.06, right=0.97, top=0.93, bottom=0.10)
 
         self._adv_ax_drift     = fig.add_subplot(gs[0, 0:2])
         self._adv_ax_consensus = fig.add_subplot(gs[0, 2:4])
@@ -941,59 +947,35 @@ class ResultsDashboard:
         ]
         for ax, title, ylabel in titles:
             ax.set_facecolor(BG)
-            ax.set_title(title, color=HDR_FG, fontsize=10,
-                         fontfamily=FONT_UI, pad=8, fontweight='semibold')
-            ax.set_xlabel('Round', color=DIM, fontsize=8, fontfamily=FONT_UI)
-            ax.set_ylabel(ylabel,  color=DIM, fontsize=8, fontfamily=FONT_UI)
-            ax.tick_params(colors=DIM, labelsize=7)
+            ax.set_title(title, color=HDR_FG, fontsize=8,
+                         fontfamily=FONT_UI, pad=5, fontweight='semibold')
+            ax.set_xlabel('Round', color=DIM, fontsize=7, fontfamily=FONT_UI)
+            ax.set_ylabel(ylabel,  color=DIM, fontsize=7, fontfamily=FONT_UI)
+            ax.tick_params(colors=DIM, labelsize=6)
             for sp in ax.spines.values():
                 sp.set_edgecolor(BORDER)
             ax.grid(True, color=BORDER, linestyle='--', linewidth=0.5, alpha=0.9)
 
         self._adv_fig = fig
+
+        # Series legend – pack at bottom FIRST so it is always visible
+        self._adv_legend_btns: Dict[str, dict] = {}
+        legend_outer = self._tk.Frame(parent, bg=SURFACE)
+        legend_outer.pack(side='bottom', fill='x', padx=8, pady=(1, 4))
+        self._tk.Label(legend_outer, text='SERIES',
+                       font=(FONT_UI, 7, 'bold'), bg=SURFACE, fg=MUTED
+                       ).pack(anchor='nw', padx=(6, 0), pady=(1, 0))
+        legend_wrap = self._tk.Frame(legend_outer, bg=SURFACE)
+        legend_wrap.pack(fill='x', expand=True, padx=(4, 0))
+        for i, name in enumerate(self.experiment_names):
+            colour = LINE_COLOURS[i % len(LINE_COLOURS)]
+            self._add_adv_legend_btn(legend_wrap, name, colour)
+
+        # Chart canvas – fills remaining space above the legend
         self._adv_canvas = FigureCanvasTkAgg(fig, master=parent)
         self._adv_canvas.draw()
         self._adv_canvas.get_tk_widget().pack(fill='both', expand=True,
-                                               padx=10, pady=(8, 2))
-
-        # Descriptions under each graph
-        desc_frame = self._tk.Frame(parent, bg=SURFACE)
-        desc_frame.pack(fill='x', padx=14, pady=(0, 2))
-        descriptions = [
-            ('Drift',
-             'Mean parameter drift \u00b1 std dev across all nodes.'),
-            ('Consensus',
-             'Global agreement score and mean peer deviation.'),
-            ('Slope',
-             'Regression slope of accuracy over a sliding window.'),
-            ('R\u00b2',
-             'Coefficient of determination \u2014 near 1.0 = strong trend.'),
-            ('Flags',
-             'Number of nodes flagged as anomalous each round.'),
-        ]
-        for title, desc in descriptions:
-            d = self._tk.Frame(desc_frame, bg=SURFACE)
-            d.pack(side='left', fill='x', expand=True, padx=4)
-            self._tk.Label(d, text=f'{title}:',
-                           font=(FONT_UI, 8, 'bold'),
-                           bg=SURFACE, fg=ACCENT).pack(side='left')
-            self._tk.Label(d, text=f' {desc}',
-                           font=(FONT_UI, 7),
-                           bg=SURFACE, fg=DIM, wraplength=200,
-                           justify='left').pack(side='left', fill='x')
-
-        # Series legend (toggle show/hide, shared with live charts)
-        self._adv_legend_btns: Dict[str, dict] = {}
-        legend_outer = self._tk.Frame(parent, bg=SURFACE)
-        legend_outer.pack(fill='x', padx=10, pady=(2, 6))
-        self._tk.Label(legend_outer, text='SERIES',
-                       font=(FONT_UI, 8, 'bold'), bg=SURFACE, fg=MUTED
-                       ).pack(side='left', padx=(6, 10))
-        legend_scroll = self._tk.Frame(legend_outer, bg=SURFACE)
-        legend_scroll.pack(side='left', fill='x', expand=True)
-        for i, name in enumerate(self.experiment_names):
-            colour = LINE_COLOURS[i % len(LINE_COLOURS)]
-            self._add_adv_legend_btn(legend_scroll, name, colour)
+                                               padx=6, pady=(4, 1))
 
         # Hover annotations for advanced charts
         self._ann_drift     = None
@@ -1008,16 +990,16 @@ class ResultsDashboard:
         """One clickable swatch + label for the advanced-tab series legend."""
         tk = self._tk
         is_visible = name not in self._hidden_exps
-        container = tk.Frame(parent, bg=SURFACE, padx=4, pady=2, cursor='hand2')
-        container.pack(side='left', padx=2)
-        sw = tk.Canvas(container, width=12, height=12,
+        container = tk.Frame(parent, bg=SURFACE, padx=2, pady=1, cursor='hand2')
+        container.pack(side='left', padx=1, pady=1)
+        sw = tk.Canvas(container, width=8, height=8,
                        bg=SURFACE, highlightthickness=0)
-        sw.pack(side='left', padx=(0, 4))
-        rect_id = sw.create_rectangle(1, 1, 11, 11,
+        sw.pack(side='left', padx=(0, 3))
+        rect_id = sw.create_rectangle(0, 0, 8, 8,
                                        fill=colour if is_visible else MUTED,
                                        outline='')
-        lbl = tk.Label(container, text=name[:20],
-                       font=(FONT_UI, 9), bg=SURFACE,
+        lbl = tk.Label(container, text=name[:18],
+                       font=(FONT_UI, 7), bg=SURFACE,
                        fg=FG if is_visible else MUTED)
         lbl.pack(side='left')
 
@@ -1202,10 +1184,11 @@ class ResultsDashboard:
         for ax in axes:
             handles, labels = ax.get_legend_handles_labels()
             if handles:
-                ax.legend(fontsize=7, facecolor=CARD, edgecolor=BORDER,
-                          labelcolor=FG, loc='best', framealpha=0.92)
+                ax.legend(fontsize=6, facecolor=CARD, edgecolor=BORDER,
+                          labelcolor=FG, loc='best', framealpha=0.92,
+                          handlelength=1.2, handletextpad=0.4,
+                          borderpad=0.3, labelspacing=0.25)
 
-        self._adv_fig.tight_layout(pad=2.4)
         self._adv_canvas.draw_idle()
 
     # Utility

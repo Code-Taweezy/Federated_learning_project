@@ -19,6 +19,7 @@ Once configured, results are exported automatically after every experiment.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -54,6 +55,17 @@ _ATTACK_LABEL: dict[str, str] = {
     "gaussian": "Gaussian",
     "none":     "None",
 }
+
+
+def _sanitize_row(row: list) -> list:
+    """Replace NaN / Inf floats with empty strings so JSON serialisation succeeds."""
+    out = []
+    for v in row:
+        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            out.append("")
+        else:
+            out.append(v)
+    return out
 
 
 def tab_name_for(dataset: str, attack_type: str, attack_ratio: float) -> str:
@@ -97,7 +109,7 @@ def export_results(results_path: str, config_path: str = "sheets_config.json") -
         print(f"[Sheets] Credentials file '{credentials_file}' not found — skipping export.")
         return False
 
-    # -- dependencies ---------------------------------------------------------
+    # -- dependencies 
     try:
         import gspread                                          # type: ignore
         from google.oauth2.service_account import Credentials  # type: ignore
@@ -105,7 +117,7 @@ def export_results(results_path: str, config_path: str = "sheets_config.json") -
         print("[Sheets] Required packages missing. Run:  pip install gspread google-auth")
         return False
 
-    # -- load JSON results ----------------------------------------------------
+    # load JSON results 
     try:
         with open(results_path, encoding="utf-8") as f:
             data = json.load(f)
@@ -134,7 +146,7 @@ def export_results(results_path: str, config_path: str = "sheets_config.json") -
         print("[Sheets] No round_results found in JSON — nothing to export.")
         return False
 
-    # -- authenticate ---------------------------------------------------------
+    #  authenticate 
     try:
         scopes = ["https://www.googleapis.com/auth/spreadsheets"]
         creds  = Credentials.from_service_account_file(credentials_file, scopes=scopes)
@@ -144,7 +156,7 @@ def export_results(results_path: str, config_path: str = "sheets_config.json") -
         print(f"[Sheets] Authentication / open failed: {exc}")
         return False
 
-    # -- find or create the right worksheet -----------------------------------
+    # -- find or create the right worksheet 
     tab = tab_name_for(dataset, attack_type, attack_ratio)
     try:
         all_sheets = spread.worksheets()
@@ -200,7 +212,7 @@ def export_results(results_path: str, config_path: str = "sheets_config.json") -
     if header_is_new:
         _fmt_header_row()
 
-    # -- build rows (one per round) -------------------------------------------
+    # build rows (one row per round)
     last_round = total_rounds or (round_results[-1].get("round", 0) if round_results else 0)
     rows = []
     for rr in round_results:
@@ -226,7 +238,10 @@ def export_results(results_path: str, config_path: str = "sheets_config.json") -
             final_loss_v if is_last else "",
         ])
 
-    # -- write in one batch request -------------------------------------------
+    # sanitise rows (NaN / Inf are not JSON-serialisable) 
+    rows = [_sanitize_row(r) for r in rows]
+
+    # write in one batch request 
     try:
         ws.append_rows(rows, value_input_option="USER_ENTERED")
         print(f"[Sheets] Exported {len(rows)} rows -> tab '{tab}'")
@@ -234,7 +249,7 @@ def export_results(results_path: str, config_path: str = "sheets_config.json") -
         print(f"[Sheets] Write failed: {exc}")
         return False
 
-    # -- export advanced metrics to a separate tab ----------------------------
+    # export advanced metrics to a separate tab 
     try:
         _export_metrics_tab(
             spread, data, timestamp, run_id,
@@ -332,5 +347,6 @@ def _export_metrics_tab(spread, data: dict,
         except Exception:
             pass
 
+    metrics_rows = [_sanitize_row(r) for r in metrics_rows]
     ws.append_rows(metrics_rows, value_input_option="USER_ENTERED")
     print(f"[Sheets] Exported {len(metrics_rows)} metrics rows -> tab '{tab_name}'")

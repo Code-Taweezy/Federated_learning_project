@@ -488,6 +488,7 @@ class FederatedNode:
                 logits = self.model(x)
                 loss = criterion(logits, y)
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 optimizer.step()
     
     def evaluate(self) -> Tuple[float, float]:
@@ -510,7 +511,10 @@ class FederatedNode:
                 correct += (predicted == batch_y).sum().item()
         
         accuracy = correct / max(1, total) 
-        avg_loss = total_loss / max(1, total) 
+        avg_loss = total_loss / max(1, total)
+        # Guard against NaN / Inf from exploding weights
+        if not np.isfinite(avg_loss):
+            avg_loss = float("inf")
         return accuracy, avg_loss
     
     def get_model_state(self) -> Dict[str, torch.Tensor]:
@@ -659,7 +663,8 @@ class DecentralisedSimulator:
             for key in curr.keys():
                 diff = curr[key].float() - prev[key].float()
                 diff_norm_sq += torch.sum(diff * diff).item()
-            drifts.append(float(np.sqrt(diff_norm_sq)))
+            val = float(np.sqrt(diff_norm_sq))
+            drifts.append(val if np.isfinite(val) else 0.0)
         return drifts
 
     def _compute_peer_deviation(self, all_states):
@@ -674,7 +679,8 @@ class DecentralisedSimulator:
                 for key in own.keys():
                     diff = own[key].float() - all_states[n_idx][key].float()
                     d += torch.sum(diff * diff).item()
-                dists.append(float(np.sqrt(d)))
+                val = float(np.sqrt(d))
+                dists.append(val if np.isfinite(val) else 0.0)
             deviations.append(float(np.mean(dists)) if dists else 0.0)
         mean_dev = float(np.mean(deviations))
         consensus = 1.0 / (1.0 + mean_dev)
@@ -760,7 +766,22 @@ class DecentralisedSimulator:
 
         # Store initial states for drift computation
         self._previous_states = [node.get_model_state() for node in self.nodes]
-        
+
+        # --- Round-0 baseline advanced metrics ---
+        peer_devs_0, consensus_0 = self._compute_peer_deviation(self._previous_states)
+        self.results["drift_per_round"].append(
+            {"mean": 0.0, "std": 0.0, "per_node": [0.0] * self.config.num_nodes})
+        self.results["peer_deviation_per_round"].append(
+            {"mean": float(np.mean(peer_devs_0)), "per_node": peer_devs_0})
+        self.results["consensus_score_per_round"].append(consensus_0)
+        avg_accs_0 = [float(np.mean(a)) for a in self.results["accuracies"]]
+        slope_0, r_sq_0 = self._compute_regression_slope(avg_accs_0, window=10)
+        self.results["regression_slope_per_round"].append(
+            {"slope": slope_0, "r_squared": r_sq_0})
+        self.results["detection_flags_per_round"].append([])
+        self.results["overhead_time"]["without_detection"].append(0.0)
+        self.results["overhead_time"]["with_detection"].append(0.0)
+
         # Training rounds
         for round_num in range(1, self.config.num_rounds + 1):
             # --- Local training ---
@@ -977,23 +998,23 @@ class DecentralisedSimulator:
                     else None
                 ),
             }
-            # Advanced metrics (only exist for r >= 1)
-            adv_idx = r - 1
-            if adv_idx >= 0 and adv_idx < len(self.results["drift_per_round"]):
+            # Advanced metrics (now exist from r == 0)
+            adv_idx = r
+            if adv_idx < len(self.results["drift_per_round"]):
                 dr = self.results["drift_per_round"][adv_idx]
                 row["drift_mean"] = dr["mean"]
                 row["drift_std"]  = dr["std"]
-            if adv_idx >= 0 and adv_idx < len(self.results["peer_deviation_per_round"]):
+            if adv_idx < len(self.results["peer_deviation_per_round"]):
                 row["peer_deviation_mean"] = self.results["peer_deviation_per_round"][adv_idx]["mean"]
-            if adv_idx >= 0 and adv_idx < len(self.results["consensus_score_per_round"]):
+            if adv_idx < len(self.results["consensus_score_per_round"]):
                 row["consensus_score"] = self.results["consensus_score_per_round"][adv_idx]
-            if adv_idx >= 0 and adv_idx < len(self.results["regression_slope_per_round"]):
+            if adv_idx < len(self.results["regression_slope_per_round"]):
                 reg = self.results["regression_slope_per_round"][adv_idx]
                 row["regression_slope"] = reg["slope"]
                 row["regression_r_squared"] = reg["r_squared"]
-            if adv_idx >= 0 and adv_idx < len(self.results["detection_flags_per_round"]):
+            if adv_idx < len(self.results["detection_flags_per_round"]):
                 row["detection_flags"] = self.results["detection_flags_per_round"][adv_idx]
-            if adv_idx >= 0 and adv_idx < len(self.results["overhead_time"]["without_detection"]):
+            if adv_idx < len(self.results["overhead_time"]["without_detection"]):
                 row["time_without_detection"] = self.results["overhead_time"]["without_detection"][adv_idx]
                 row["time_with_detection"]    = self.results["overhead_time"]["with_detection"][adv_idx]
             round_results.append(row)
