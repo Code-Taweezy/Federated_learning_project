@@ -12,7 +12,7 @@ The purpose of this simulation is to establish baseline performance data for exi
 
 ### Configurable DFL Simulator 
 
-- **Datasets:** FEMNIST, CelebA, Shakespeare, Reddit (via [LEAF]https://github.com/TalwalkarLab/leaf) benchmarks
+- **Datasets:** FEMNIST and Shakespeare (via [LEAF]https://github.com/TalwalkarLab/leaf) benchmarks
 
 - **Defense / Aggregation Mechanisms:**
   - `FedAvg` — Baseline federated averaging
@@ -51,6 +51,11 @@ Experimental results are logged in real time to Google Sheets via the Google Clo
 - Python 3.9+
 - [PyTorch](https://pytorch.org/) 2.0+
 - (Optional) CUDA-compatible GPU for accelerated training
+  
+### Installations 
+```bash
+pip install -r requirements.txt
+```
 
 ### Running Automated experiments 
 To execute the full experiment suite: 
