@@ -94,11 +94,6 @@ ALGORITHM_SUITE = [
                attack_ratio=0.25,
                rounds=50),
     
-    Experiment('sketchguard', 
-               aggregation='sketchguard', 
-               attack_ratio=0.25,
-               rounds=50),
-    
     Experiment('ubar', 
                aggregation='ubar', 
                attack_ratio=0.25,
@@ -140,9 +135,6 @@ SHAKESPEARE_SUITE = [
                attack_ratio=0.25, rounds=50),
     Experiment('shakespeare_balance',
                dataset='shakespeare', aggregation='balance',
-               attack_ratio=0.25, rounds=50),
-    Experiment('shakespeare_sketchguard',
-               dataset='shakespeare', aggregation='sketchguard',
                attack_ratio=0.25, rounds=50),
     Experiment('shakespeare_ubar',
                dataset='shakespeare', aggregation='ubar',
@@ -394,8 +386,8 @@ def print_menu():
     print("     - 2 experiments (32 nodes, 50 rounds)")
     print("     - FedAvg no-attack vs directed-attack baseline\n")
     print("  2. ALGORITHM COMPARISON")
-    print("     - 4 experiments (32 nodes, 50 rounds)")
-    print("     - FedAvg vs BALANCE vs Sketchguard vs UBAR  (femnist)\n")
+    print("     - 3 experiments (32 nodes, 50 rounds)")
+    print("     - FedAvg vs BALANCE vs UBAR  (femnist)\n")
     print("  3. TOPOLOGY COMPARISON")
     print("     - 3 experiments (32 nodes, 50 rounds)")
     print("     - Ring vs k-regular vs fully-connected\n")
@@ -423,9 +415,9 @@ def run_custom_suite():
         if name.lower() == 'done':
             break
         
-        print("\nAggregation: 1=FedAvg, 2=BALANCE, 3=Sketchguard, 4=UBAR")
-        agg_choice = input("Choose (1-4): ").strip()
-        agg_map = {'1': 'fedavg', '2': 'balance', '3': 'sketchguard', '4': 'ubar'}
+        print("\nAggregation: 1=FedAvg, 2=BALANCE, 3=UBAR")
+        agg_choice = input("Choose (1-3): ").strip()
+        agg_map = {'1': 'fedavg', '2': 'balance', '3': 'ubar'}
         aggregation = agg_map.get(agg_choice, 'fedavg')
         
         print("\nTopology: 1=Ring, 2=k-Regular, 3=Fully")

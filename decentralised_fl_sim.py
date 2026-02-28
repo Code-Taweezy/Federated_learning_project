@@ -30,7 +30,7 @@ class SimulationConfig:
     k_neighbors: int = 4 # for k-regular
 
     #Aggregation 
-    aggregation: str = "fedavg" # fedavg, balance, sketchguard,ubar
+    aggregation: str = "fedavg" # fedavg, balance, ubar
 
     #Attack configuration
     attack_type: str = "directed" # valid: directed, gaussian
@@ -42,7 +42,6 @@ class SimulationConfig:
     balance_alpha: float = 0.5 # for balance aggregation
     balance_gamma: float = 2.0 # for balance aggregation
     balance_kappa: float = 1.0 # for balance aggregation
-    sketch_size: int = 1000 # for sketchguard
     ubar_rho: float = 0.4 # for ubar
 
     def __post_init__(self):
@@ -50,7 +49,7 @@ class SimulationConfig:
             raise ValueError(f"attack_ratio must be between 0.0 and 0.5, got {self.attack_ratio}")
         if self.attack_type not in ("directed", "gaussian"):
             raise ValueError(f"Unknown attack_type: {self.attack_type}")
-        if self.aggregation not in ("fedavg", "balance", "sketchguard", "ubar"):
+        if self.aggregation not in ("fedavg", "balance", "ubar"):
             raise ValueError(f"Unknown aggregation: {self.aggregation}")
 
 # ── Graph Topology ──────────────────────────────────────────────
@@ -327,98 +326,6 @@ class UBARAggregator:
             
             return loss.item()
         
-class SketchguardAggregator:
-    """SketchGuard: Compressed sketch-based filtering."""
-
-    def __init__(self, node_id: int, config: SimulationConfig, model_dim: int, total_rounds: int):
-        self.node_id = node_id
-        self.config = config 
-        self.model_dim = model_dim
-        self.total_rounds = total_rounds
-        self.current_round = 0 
-
-        #Count-Sketch hash functions 
-        self._init_hash_functions()
-
-        self.stats = {
-            "accepted": 0, 
-            "total": 0, 
-            "acceptance_rates": [],
-            "thresholds": []
-        }
-    
-    def _init_hash_functions(self):
-        """Initialise count sketch hash and sign functions"""
-        rng = np.random.RandomState(self.config.seed)
-        self.hash_idx = rng.randint(0, self.config.sketch_size, size=self.model_dim)
-        self.hash_sign = rng.choice([-1, 1], size=self.model_dim) 
-    
-    def _model_to_vector(self, model: Dict[str, torch.Tensor]) -> np.ndarray:
-        """Flattens the model into a vector"""
-        vectors = []
-        for param in model.values():
-            vectors.append(param.detach().cpu().numpy().flatten())
-        return np.concatenate(vectors)
-    
-    def _sketch(self, vector: np.ndarray) -> np.ndarray:
-        """Count-Sketch compression"""
-        sketch = np.zeros(self.config.sketch_size)
-
-        #Handle dimension mismatch 
-        vec_len = min(len(vector), self.config.sketch_size)
-
-        for i in range(vec_len):
-            bucket = self.hash_idx[i]
-            sign = self.hash_sign[i]
-            sketch[bucket] += sign * vector[i]
-        return sketch
-    
-    def aggregate(self, own_model: Dict[str, torch.Tensor], neighbor_models: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
-        """Sketch-based filtering and aggregation"""
-
-        self.current_round += 1
-
-        if not neighbor_models:
-            return own_model
-        
-        #Sketch own model
-        own_vector = self._model_to_vector(own_model)
-        own_sketch = self._sketch(own_vector)
-
-        # compute threshold 
-        own_norm = np.linalg.norm(own_sketch)
-        lambda_t = self.current_round / max(1, self.total_rounds)
-        threshold = self.config.balance_gamma * np.exp(-self.config.balance_kappa * lambda_t) * own_norm
-        self.stats["thresholds"].append(threshold)
-
-        #Filter neighbors based on sketch distance
-        accepted_models = []
-        for neighbor_model in neighbor_models:
-            neighbor_vector = self._model_to_vector(neighbor_model)
-            neighbor_sketch = self._sketch(neighbor_vector)
-
-            distance = np.linalg.norm(own_sketch - neighbor_sketch)
-            if distance <= threshold:
-                accepted_models.append(neighbor_model)
-        
-        #Fallback: accept at least one neighbor (closest neighbor)
-        if not accepted_models and neighbor_models:
-            accepted_models.append(neighbor_models[0])
-
-        #Statistics 
-        self.stats["total"] += len(neighbor_models)
-        self.stats["accepted"] += len(accepted_models)
-        acceptance_rate = len(accepted_models) / max(1, len(neighbor_models))
-        self.stats["acceptance_rates"].append(acceptance_rate)
-
-        #Aggregate accepted models
-        neighbor_avg = _average_state_dicts(accepted_models) if accepted_models else own_model
-        aggregated = {}
-        for key in own_model.keys():
-            aggregated[key] = (self.config.balance_alpha * own_model[key] + 
-                            (1 - self.config.balance_alpha) * neighbor_avg[key])
-        return aggregated
-    
 # ── Federated Node ──────────────────────────────────────────────
 
 class FederatedNode: 
@@ -433,14 +340,10 @@ class FederatedNode:
         self.device = device 
 
         # Initialise aggregator 
-        model_dim = sum(p.numel() for p in model.state_dict().values())
-
         if config.aggregation == "fedavg":
             self.aggregator = FedAvgAggregator(node_id)
         elif config.aggregation == "balance": 
             self.aggregator = BALANCEAggregator(node_id, config, total_rounds)
-        elif config.aggregation == "sketchguard":
-            self.aggregator = SketchguardAggregator(node_id, config, model_dim, total_rounds)
         elif config.aggregation == "ubar":
             self.aggregator = UBARAggregator(node_id, config, train_loader, device, model)
         else:
@@ -1065,7 +968,7 @@ class DecentralisedSimulator:
 # ── Command Line Interface ──────────────────────────────────────
 
 DATASETS     = ["femnist", "shakespeare"]
-AGGREGATORS  = ["fedavg", "balance", "sketchguard", "ubar"]
+AGGREGATORS  = ["fedavg", "balance", "ubar"]
 TOPOLOGIES   = ["ring", "fully", "k-regular"]
 
 
@@ -1084,7 +987,7 @@ def _interactive_config() -> dict:
     print("\nAggregation algorithm:")
     for i, a in enumerate(AGGREGATORS, 1):
         print(f"  {i}. {a}")
-    ag_idx = int(input("Choose aggregator (1-4) [default 1]: ").strip() or "1") - 1
+    ag_idx = int(input("Choose aggregator (1-3) [default 1]: ").strip() or "1") - 1
     aggregation = AGGREGATORS[max(0, min(ag_idx, len(AGGREGATORS) - 1))]
 
     print("\nTopology:")
@@ -1129,7 +1032,7 @@ def main():
     
     # Aggregation
     parser.add_argument("--aggregation", type=str, default="fedavg",
-                       choices=["fedavg", "balance", "sketchguard", "ubar"])
+                       choices=["fedavg", "balance", "ubar"])
     
     # Attack
     parser.add_argument("--attack-ratio", type=float, default=0.0)
@@ -1141,7 +1044,6 @@ def main():
     parser.add_argument("--balance-gamma", type=float, default=2.0)
     parser.add_argument("--balance-kappa", type=float, default=1.0)
     parser.add_argument("--balance-alpha", type=float, default=0.5)
-    parser.add_argument("--sketch-size", type=int, default=1000)
     parser.add_argument("--ubar-rho", type=float, default=0.4)
     
     # Other
@@ -1180,7 +1082,6 @@ def main():
         balance_gamma=args.balance_gamma,
         balance_kappa=args.balance_kappa,
         balance_alpha=args.balance_alpha,
-        sketch_size=args.sketch_size,
         ubar_rho=args.ubar_rho,
         seed=args.seed
     )

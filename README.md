@@ -18,7 +18,6 @@ The purpose of this simulation is to establish baseline performance data for exi
   - `FedAvg` — Baseline federated averaging
   - `BALANCE` — Distance-threshold filtering with weighted aggregation
   - `UBAR` — Two-stage Byzantine-robust aggregation
-  - `SketchGuard` — Compressed sketch-based filtering
 - **Attack Types:**
   - `Directed` — Deviates model parameters in the opposite direction of the honest average
   - `Gaussian` — Replaces model parameters with scaled Gaussian noise
