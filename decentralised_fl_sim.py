@@ -12,7 +12,7 @@ import argparse
 from leaf_datasets import load_leaf_dataset, create_leaf_client_partitions
 from model_variants import get_model_variant 
 
-#Confuration Classes 
+# Configuration Classes
 
 @dataclass
 class SimulationConfig: 
@@ -33,19 +33,27 @@ class SimulationConfig:
     aggregation: str = "fedavg" # fedavg, balance, sketchguard,ubar
 
     #Attack configuration
-    attack_type: str = "directed" # directed, gaussian, label_flipping
-    attack_ratio: float = 0.0 #0.0 to 1.0 
+    attack_type: str = "directed" # valid: directed, gaussian
+    attack_ratio: float = 0.0 # 0.0 to 0.5 (proportion of compromised nodes)
     attack_strength: float = 1.0 # for directed and gaussian
 
     #Algorithm parameters
 
     balance_alpha: float = 0.5 # for balance aggregation
-    balance_gamma: float = 0.5 # for balance aggregation
-    balance_kappa: float = 0.5 # for balance aggregation
+    balance_gamma: float = 2.0 # for balance aggregation
+    balance_kappa: float = 1.0 # for balance aggregation
     sketch_size: int = 1000 # for sketchguard
     ubar_rho: float = 0.4 # for ubar
 
-"""Graph topology"""
+    def __post_init__(self):
+        if not (0.0 <= self.attack_ratio <= 0.5):
+            raise ValueError(f"attack_ratio must be between 0.0 and 0.5, got {self.attack_ratio}")
+        if self.attack_type not in ("directed", "gaussian"):
+            raise ValueError(f"Unknown attack_type: {self.attack_type}")
+        if self.aggregation not in ("fedavg", "balance", "sketchguard", "ubar"):
+            raise ValueError(f"Unknown aggregation: {self.aggregation}")
+
+# ── Graph Topology ──────────────────────────────────────────────
 
 class NetworkGraph:
     """Network topology for decentralised learning"""
@@ -97,7 +105,17 @@ class NetworkGraph:
                 edges.add(edge)
         return list(edges)
     
-"""BYZANTINE ATTACKS"""
+# ── Byzantine Attacks ───────────────────────────────────────────
+
+def _average_state_dicts(models: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+    """Average a list of model state dicts parameter-wise."""
+    if not models:
+        return {}
+    avg = {}
+    for key in models[0].keys():
+        stacked = torch.stack([m[key].float() for m in models])
+        avg[key] = stacked.mean(dim=0).to(models[0][key].dtype)
+    return avg
 
 class ByzantineAttacker:
     #implements Byzantine attacks on FL 
@@ -118,17 +136,17 @@ class ByzantineAttacker:
         #creates a malicious model update 
 
         if not honest_updates: 
-            #no honest updates are available, return sezo update
+            # No honest updates available — return empty (zero) update
             return {}
         #compute the average of honest updates 
-        avg_update = self._average_models(honest_updates)
+        avg_update = _average_state_dicts(honest_updates)
 
         if self.config.attack_type == "gaussian":
-            #Gaussian attack: pure random noise
+            # Gaussian attack: sample Gaussian noise and scale by attack_strength * sqrt(200)
             malicious = {}
 
             for key, param in avg_update.items():
-                noise = torch.rand_like(param.float() * np.sqrt(200.0))
+                noise = torch.randn_like(param.float()) * self.config.attack_strength * np.sqrt(200.0)
                 malicious[key] = noise.to(param.dtype)
             return malicious
         elif self.config.attack_type == "directed":
@@ -141,24 +159,13 @@ class ByzantineAttacker:
                 #deviate in opposite direction 
                 malicious[key] = param - self.config.attack_strength * direction
             return malicious
+        else:
+            raise ValueError(f"Unknown attack type: {self.config.attack_type}")
     
-    def _average_models(self, models: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
-        # Average multiple state dicts 
-        if not models: 
-            return {}
-        
-        avg = {}
-        for key in models[0].keys():
-            stacked = torch.stack([m[key].float() for m in models])
-            avg[key] = stacked.mean (dim=0).to(models[0][key].dtype)
-        return avg
-    
-"""AGGREGATION ALGORITHMS"""
+# ── Aggregation Algorithms ──────────────────────────────────────
 
 class FedAvgAggregator : 
-
-
-    # Standard federated averaging 
+    """Standard Federated Averaging — accepts all neighbours equally."""
 
     def __init__ (self,node_id: int ):
         self.node_id = node_id
@@ -170,13 +177,7 @@ class FedAvgAggregator :
         self.stats["total"] += len(neighbor_models)
         self.stats["accepted"] += len(neighbor_models)
 
-        return self.average_models(all_models)
-    def average_models(self, models: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
-        avg = {}
-        for key in models[0].keys():
-            stacked = torch.stack([m[key].float() for m in models])
-            avg[key] = stacked.mean(dim=0).to(models[0][key].dtype)
-        return avg
+        return _average_state_dicts(all_models)
     
 class BALANCEAggregator:
     """BALANCE: distance-threshold filtering with weighted aggregation."""
@@ -226,7 +227,7 @@ class BALANCEAggregator:
         self.stats["accepted"] += len(accepted_models)
         self.stats["acceptance_rates"].append(len(accepted_models) / max(1, len(neighbor_models)))
 
-        neighbor_avg = self._average_models(accepted_models)
+        neighbor_avg = _average_state_dicts(accepted_models)
         aggregated = {}
         for key in own_model.keys():
             aggregated[key] = (
@@ -234,19 +235,10 @@ class BALANCEAggregator:
                 + (1 - self.config.balance_alpha) * neighbor_avg[key]
             )
         return aggregated
-
-    def _average_models(self, models: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
-        if not models:
-            return {}
-        avg = {}
-        for key in models[0].keys():
-            stacked = torch.stack([m[key].float() for m in models])
-            avg[key] = stacked.mean(dim=0).to(models[0][key].dtype)
-        return avg
         
 class UBARAggregator: 
 
-        """" UBAR: Two-stage Byzantine-robust aggregation"""
+        """UBAR: Two-stage Byzantine-robust aggregation."""
 
         def __init__(self, node_id: int, config: SimulationConfig, train_loader: DataLoader, device: torch.device, model_template:nn.Module):
             self.node_id = node_id
@@ -306,7 +298,7 @@ class UBARAggregator:
             self.stats["accepted"] += len(stage2_selected)
             
             # Aggregate
-            neighbor_avg = self._average_models(stage2_selected)
+            neighbor_avg = _average_state_dicts(stage2_selected)
             
             aggregated = {}
             for key in own_model.keys():
@@ -335,17 +327,8 @@ class UBARAggregator:
             
             return loss.item()
         
-        def _average_models(self, models: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
-            if not models:
-                return {}
-            avg = {}
-            for key in models[0].keys():
-                stacked = torch.stack([m[key].float() for m in models])
-                avg[key] = stacked.mean(dim=0).to(models[0][key].dtype)
-            return avg
-        
 class SketchguardAggregator:
-    """Sketchguard: COmpressed sketch-based filtering"""
+    """SketchGuard: Compressed sketch-based filtering."""
 
     def __init__(self, node_id: int, config: SimulationConfig, model_dim: int, total_rounds: int):
         self.node_id = node_id
@@ -429,25 +412,14 @@ class SketchguardAggregator:
         self.stats["acceptance_rates"].append(acceptance_rate)
 
         #Aggregate accepted models
-        neighbor_avg = self._average_models(accepted_models) if accepted_models else own_model
+        neighbor_avg = _average_state_dicts(accepted_models) if accepted_models else own_model
         aggregated = {}
         for key in own_model.keys():
             aggregated[key] = (self.config.balance_alpha * own_model[key] + 
                             (1 - self.config.balance_alpha) * neighbor_avg[key])
         return aggregated
     
-    def _average_models(self, models: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
-        """Average multiple state dicts"""
-        if not models:
-            return {}
-        
-        avg = {}
-        for key in models[0].keys():
-            stacked = torch.stack([m[key].float() for m in models])
-            avg[key] = stacked.mean(dim=0).to(models[0][key].dtype)
-        return avg
-
-"""Federated Node"""
+# ── Federated Node ──────────────────────────────────────────────
 
 class FederatedNode: 
     """A single node in the federated network"""
@@ -525,7 +497,7 @@ class FederatedNode:
         """Set the model parameters"""
         self.model.load_state_dict(state, strict = False)
 
-"""Main simulator"""
+# ── Main Simulator ──────────────────────────────────────────────
 
 class DecentralisedSimulator:
     """Main simulator for decentralised federated learning"""
@@ -622,14 +594,12 @@ class DecentralisedSimulator:
                 from leaf_datasets import LEAFFEMNISTModel
                 model = LEAFFEMNISTModel(self.num_classes).to(self.device)
             elif self.config.dataset == "celeba":
+                # Future: CelebA is supported programmatically but not yet exposed via CLI
                 from leaf_datasets import LEAFCelebAModel
                 model = LEAFCelebAModel(self.num_classes).to(self.device)
             elif self.config.dataset == "shakespeare":
                 from leaf_datasets import LEAFShakespeareModel
                 model = LEAFShakespeareModel(self.num_classes).to(self.device)
-            elif self.config.dataset == "reddit":
-                from leaf_datasets import LEAFRedditModel
-                model = LEAFRedditModel(self.num_classes).to(self.device)
             else:
                 raise ValueError(f"Unsupported dataset: {self.config.dataset}")
             
@@ -1092,7 +1062,7 @@ class DecentralisedSimulator:
         except Exception:
             pass  # Sheets export is always best-effort
 
-"""Command line interface for running simulations."""
+# ── Command Line Interface ──────────────────────────────────────
 
 DATASETS     = ["femnist", "shakespeare"]
 AGGREGATORS  = ["fedavg", "balance", "sketchguard", "ubar"]

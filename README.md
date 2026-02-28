@@ -12,7 +12,7 @@ The purpose of this simulation is to establish baseline performance data for exi
 
 ### Configurable DFL Simulator 
 
-- **Datasets:** FEMNIST and Shakespeare (via [LEAF]https://github.com/TalwalkarLab/leaf) benchmarks
+- **Datasets:** FEMNIST and Shakespeare (via [LEAF](https://github.com/TalwalkarLab/leaf)) benchmarks
 
 - **Defense / Aggregation Mechanisms:**
   - `FedAvg` — Baseline federated averaging
@@ -20,8 +20,8 @@ The purpose of this simulation is to establish baseline performance data for exi
   - `UBAR` — Two-stage Byzantine-robust aggregation
   - `SketchGuard` — Compressed sketch-based filtering
 - **Attack Types:**
-  - `Directed` — Pushes models toward a target class
-  - `Gaussian` — Adds noise to gradients
+  - `Directed` — Deviates model parameters in the opposite direction of the honest average
+  - `Gaussian` — Replaces model parameters with scaled Gaussian noise
 - **Network Topologies:** Ring, Fully Connected, K-Regular
 - **Attack Ratio:** Configurable from 0.0 to 0.5 (proportion of compromised nodes)
 - Supports both **CLI arguments** and an **interactive configuration mode**
@@ -72,8 +72,10 @@ After completing baseline data collection and analysis, a **lightweight post-acc
 - **Deep Learning:** PyTorch
 - **Visualisation:** Matplotlib, Seaborn
 - **Data Processing:** NumPy, Pandas, scikit-learn
+- **Statistical Analysis:** SciPy
 - **Graph Modelling:** NetworkX
 - **Data Export:** gspread, Google Auth
+- **Dashboard GUI:** tkinter (included with Python standard library)
 
 ## License
 
