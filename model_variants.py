@@ -2,7 +2,7 @@
 import torch.nn as nn
 
 def get_model_variant(variant: str, num_classes: int):
-    """Get model variant by size."""
+    """Return a FEMNIST CNN whose capacity matches the requested variant name."""
     
     if variant == "tiny":
         return TinyFEMNISTModel(num_classes)
@@ -17,7 +17,7 @@ def get_model_variant(variant: str, num_classes: int):
         raise ValueError(f"Unknown variant: {variant}")
 
 class TinyFEMNISTModel(nn.Module):
-    """Tiny model for testing."""
+    """Minimal single-conv FEMNIST model (~80K params) for quick smoke tests."""
     def __init__(self, num_classes=62):
         super().__init__()
         self.conv1 = nn.Conv2d(1, 16, 5, padding=2)
@@ -33,7 +33,7 @@ class TinyFEMNISTModel(nn.Module):
         return self.fc2(x)
 
 class SmallFEMNISTModel(nn.Module):
-    """Small model."""
+    """Single-conv FEMNIST model (~250K params) for lightweight experiments."""
     def __init__(self, num_classes=62):
         super().__init__()
         self.conv1 = nn.Conv2d(1, 32, 5, padding=2)
@@ -49,7 +49,7 @@ class SmallFEMNISTModel(nn.Module):
         return self.fc2(x)
 
 class LargeFEMNISTModel(nn.Module):
-    """Large model."""
+    """Two-conv FEMNIST model (~1M params) with dropout for full-scale experiments."""
     def __init__(self, num_classes=62):
         super().__init__()
         self.conv1 = nn.Conv2d(1, 64, 5, padding=2)
