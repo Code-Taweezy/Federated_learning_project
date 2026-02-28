@@ -30,7 +30,7 @@ METRICS_RE = re.compile(
 )
 
 
-""" EXPERIMENT CONFIGURATIONS"""
+# ── Experiment Configurations ──────────────────────────────────────
 
 
 class Experiment:
@@ -66,7 +66,7 @@ class Experiment:
         return cmd
 
 
-"""EXPERIMENT SUITES"""
+# ── Experiment Suites ──────────────────────────────────────────────
 
 
 # Suite 1: Baseline (Quick Test)
@@ -163,7 +163,7 @@ def _build_cross_dataset_suite(attack_ratio: float = 0.25,
     return experiments
 
 
-"""EXPERIMENT RUNNER"""
+# ── Experiment Runner ──────────────────────────────────────────────
 
 
 class ExperimentRunner:
