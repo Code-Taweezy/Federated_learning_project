@@ -33,7 +33,7 @@ class SimulationConfig:
     aggregation: str = "fedavg" # fedavg, balance, sketchguard,ubar
 
     #Attack configuration
-    attack_type: str = "directed" # directed, gaussian
+    attack_type: str = "directed" # valid: directed, gaussian
     attack_ratio: float = 0.0 # 0.0 to 0.5 (proportion of compromised nodes)
     attack_strength: float = 1.0 # for directed and gaussian
 
@@ -594,7 +594,7 @@ class DecentralisedSimulator:
                 from leaf_datasets import LEAFFEMNISTModel
                 model = LEAFFEMNISTModel(self.num_classes).to(self.device)
             elif self.config.dataset == "celeba":
-                # Future: CelebA is not yet exposed via CLI
+                # Future: CelebA is supported programmatically but not yet exposed via CLI
                 from leaf_datasets import LEAFCelebAModel
                 model = LEAFCelebAModel(self.num_classes).to(self.device)
             elif self.config.dataset == "shakespeare":
