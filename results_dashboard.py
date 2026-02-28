@@ -75,6 +75,8 @@ SUMMARY_COL_TIPS = {
     'TN':                    'True Negatives \u2014 honest nodes correctly not flagged',
     'FN':                    'False Negatives \u2014 compromised nodes missed',
     'T_detect':              'Detection time: first round a true positive was flagged',
+    'OH w/o Det':            'Avg overhead per round without detection (seconds)',
+    'OH w/ Det':             'Avg overhead per round with detection (seconds)',
     'Duration':              'Total wall-clock time for the experiment',
 }
 
@@ -452,6 +454,8 @@ class ResultsDashboard:
             'TN',
             'FN',
             'T_detect',
+            'OH w/o Det',
+            'OH w/ Det',
             'Duration',
         )
         self._sum_tree = self._make_tree(
@@ -461,7 +465,9 @@ class ResultsDashboard:
                         'Compr. Acc': 68,
                         'Atk Impact': 64,
                         'TP': 34, 'FP': 34, 'TN': 34, 'FN': 34,
-                        'T_detect': 56, 'Duration': 62},
+                        'T_detect': 56,
+                        'OH w/o Det': 72, 'OH w/ Det': 72,
+                        'Duration': 62},
             height=7)
         self._sum_iids: dict = {}
         for name in self.experiment_names:
@@ -509,7 +515,29 @@ class ResultsDashboard:
         hs.grid(row=1, column=0, sticky='ew')
         wrap.grid_rowconfigure(0, weight=1)
         wrap.grid_columnconfigure(0, weight=1)
+        # Initial auto-fit to heading widths
+        self._autofit_columns(tree)
         return tree
+
+    def _autofit_columns(self, tree):
+        """Resize every column to fit the widest heading or data value."""
+        import tkinter.font as tkfont
+        heading_font = tkfont.Font(family=FONT_UI, size=9, weight='bold')
+        data_font    = tkfont.Font(family=FONT_MONO, size=9)
+        pad = 16  # extra pixels for padding
+        for col in tree['columns']:
+            # Measure heading text
+            heading_text = tree.heading(col, 'text')
+            min_w = heading_font.measure(heading_text) + pad
+            # Measure every data cell in this column
+            for iid in tree.get_children():
+                vals = tree.item(iid, 'values')
+                col_idx = list(tree['columns']).index(col)
+                if col_idx < len(vals):
+                    cell_w = data_font.measure(str(vals[col_idx])) + pad
+                    if cell_w > min_w:
+                        min_w = cell_w
+            tree.column(col, width=min_w, minwidth=min_w)
 
     def _bind_tree_tooltips(self, tree, descriptions: dict):
         """Bind hover tooltips to Treeview column headings."""
@@ -627,6 +655,15 @@ class ResultsDashboard:
                             if md.get('tp', 0) > 0:
                                 res['detection']['detection_time'] = md['round']
                                 break
+                    # Pull overhead averages from metrics if not in result
+                    if mdata and 'overhead_avg' not in res:
+                        t_wo = [d.get('time_without_det', 0) for d in mdata if 'time_without_det' in d]
+                        t_w  = [d.get('time_with_det', 0) for d in mdata if 'time_with_det' in d]
+                        if t_wo or t_w:
+                            res['overhead_avg'] = {
+                                'without_detection': sum(t_wo) / len(t_wo) if t_wo else None,
+                                'with_detection':    sum(t_w) / len(t_w)   if t_w  else None,
+                            }
                     self._update_sidebar(name, self._status[name])
                     self._update_sum_row(name, res)
                     self._set_progress(
@@ -851,6 +888,7 @@ class ResultsDashboard:
             row.get('n_flagged', '\u2013'),
         ))
         self._round_tree.see(iid)
+        self._autofit_columns(self._round_tree)
 
     def _on_table_select(self, name):
         self._refresh_round_table(name)
@@ -861,6 +899,7 @@ class ResultsDashboard:
         if not iid:
             return
         det = res.get('detection', {}) or {}
+        oh = res.get('overhead_avg', {}) or {}
         self._sum_tree.item(iid, values=(
             name,
             'Failed' if res.get('error') else 'Done',
@@ -873,8 +912,11 @@ class ResultsDashboard:
             det.get('true_negatives', '\u2013'),
             det.get('false_negatives', '\u2013'),
             det.get('detection_time', '\u2013') if det.get('detection_time') is not None else '\u2013',
+            self._fmt(oh.get('without_detection')) if oh.get('without_detection') is not None else '\u2013',
+            self._fmt(oh.get('with_detection')) if oh.get('with_detection') is not None else '\u2013',
             res.get('duration', '-'),
         ))
+        self._autofit_columns(self._sum_tree)
 
     def _refresh_summary_chart(self):
         import numpy as np
@@ -920,23 +962,25 @@ class ResultsDashboard:
         self._sum_fig.tight_layout(pad=2)
         self._sum_canvas.draw_idle()
 
-    # Advanced metrics tab (5 charts: drift, consensus, slope, R², flags)
+    # Advanced metrics tab (6 charts: drift, consensus, slope, R², flags, overhead)
     def _build_advanced_tab(self, parent):
         import matplotlib.pyplot as plt
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         from matplotlib.gridspec import GridSpec
 
-        fig = plt.figure(figsize=(12, 5.0))
+        # Fixed wide figure so all 6 charts are fully visible
+        fig = plt.figure(figsize=(18, 5.5))
         fig.patch.set_facecolor(SURFACE)
-        gs = GridSpec(2, 6, figure=fig,
+        gs = GridSpec(2, 9, figure=fig,
                       hspace=0.50, wspace=0.55,
-                      left=0.06, right=0.97, top=0.93, bottom=0.10)
+                      left=0.04, right=0.98, top=0.93, bottom=0.10)
 
-        self._adv_ax_drift     = fig.add_subplot(gs[0, 0:2])
-        self._adv_ax_consensus = fig.add_subplot(gs[0, 2:4])
-        self._adv_ax_slope     = fig.add_subplot(gs[0, 4:6])
+        self._adv_ax_drift     = fig.add_subplot(gs[0, 0:3])
+        self._adv_ax_consensus = fig.add_subplot(gs[0, 3:6])
+        self._adv_ax_slope     = fig.add_subplot(gs[0, 6:9])
         self._adv_ax_r2        = fig.add_subplot(gs[1, 0:3])
         self._adv_ax_flags     = fig.add_subplot(gs[1, 3:6])
+        self._adv_ax_overhead  = fig.add_subplot(gs[1, 6:9])
 
         titles = [
             (self._adv_ax_drift,     'Drift per Round',            'Drift'),
@@ -944,6 +988,7 @@ class ResultsDashboard:
             (self._adv_ax_slope,     'Regression Slope',           'Slope'),
             (self._adv_ax_r2,        'R\u00b2 (Goodness of Fit)',        'R\u00b2'),
             (self._adv_ax_flags,     'Detection Flags per Round',  'Count'),
+            (self._adv_ax_overhead,  'Overhead per Round',         'Time (s)'),
         ]
         for ax, title, ylabel in titles:
             ax.set_facecolor(BG)
@@ -971,11 +1016,49 @@ class ResultsDashboard:
             colour = LINE_COLOURS[i % len(LINE_COLOURS)]
             self._add_adv_legend_btn(legend_wrap, name, colour)
 
-        # Chart canvas – fills remaining space above the legend
-        self._adv_canvas = FigureCanvasTkAgg(fig, master=parent)
+        # Scrollable chart area – horizontal scroll for wide figure
+        tk = self._tk
+        scroll_frame = tk.Frame(parent, bg=SURFACE)
+        scroll_frame.pack(fill='both', expand=True, padx=6, pady=(4, 1))
+
+        h_scroll = self._ttk.Scrollbar(scroll_frame, orient='horizontal',
+                                        style='D.Horizontal.TScrollbar')
+        h_scroll.pack(side='bottom', fill='x')
+
+        adv_canvas_tk = tk.Canvas(scroll_frame, bg=SURFACE,
+                                   highlightthickness=0,
+                                   xscrollcommand=h_scroll.set)
+        adv_canvas_tk.pack(side='top', fill='both', expand=True)
+        h_scroll.config(command=adv_canvas_tk.xview)
+
+        inner = tk.Frame(adv_canvas_tk, bg=SURFACE)
+        self._adv_canvas = FigureCanvasTkAgg(fig, master=inner)
         self._adv_canvas.draw()
-        self._adv_canvas.get_tk_widget().pack(fill='both', expand=True,
-                                               padx=6, pady=(4, 1))
+        chart_widget = self._adv_canvas.get_tk_widget()
+        chart_widget.pack(fill='both', expand=True)
+
+        inner_id = adv_canvas_tk.create_window((0, 0), window=inner, anchor='nw')
+
+        def _on_inner_configure(event):
+            adv_canvas_tk.configure(scrollregion=adv_canvas_tk.bbox('all'))
+        inner.bind('<Configure>', _on_inner_configure)
+
+        def _on_canvas_configure(event):
+            # Make the inner frame at least as tall as the visible area
+            # but keep it wide enough for the matplotlib figure
+            fig_w = int(fig.get_figwidth() * fig.get_dpi())
+            h = event.height
+            adv_canvas_tk.itemconfig(inner_id, width=max(fig_w, event.width),
+                                     height=h)
+        adv_canvas_tk.bind('<Configure>', _on_canvas_configure)
+
+        # Enable mouse-wheel horizontal scroll
+        def _on_mousewheel(event):
+            adv_canvas_tk.xview_scroll(int(-1 * (event.delta / 120)), 'units')
+        adv_canvas_tk.bind('<Enter>',
+                           lambda e: adv_canvas_tk.bind_all('<MouseWheel>', _on_mousewheel))
+        adv_canvas_tk.bind('<Leave>',
+                           lambda e: adv_canvas_tk.unbind_all('<MouseWheel>'))
 
         # Hover annotations for advanced charts
         self._ann_drift     = None
@@ -983,6 +1066,7 @@ class ResultsDashboard:
         self._ann_slope     = None
         self._ann_r2        = None
         self._ann_flags     = None
+        self._ann_overhead  = None
         self._adv_hover_data: Dict = {}
         self._adv_canvas.mpl_connect('motion_notify_event', self._on_adv_hover)
 
@@ -1021,6 +1105,7 @@ class ResultsDashboard:
             self._adv_ax_slope:     ('_ann_slope',     '{:.6f}', 'Slope'),
             self._adv_ax_r2:        ('_ann_r2',        '{:.4f}', 'R\u00b2'),
             self._adv_ax_flags:     ('_ann_flags',     '{:.0f}', 'Flagged'),
+            self._adv_ax_overhead:  ('_ann_overhead',  '{:.4f}', 'Time (s)'),
         }
         if event.inaxes not in ax_map:
             return
@@ -1083,11 +1168,12 @@ class ResultsDashboard:
         import numpy as np
 
         axes = [self._adv_ax_drift, self._adv_ax_consensus,
-                self._adv_ax_slope, self._adv_ax_r2, self._adv_ax_flags]
+                self._adv_ax_slope, self._adv_ax_r2, self._adv_ax_flags,
+                self._adv_ax_overhead]
 
         # Invalidate hover annotations before clearing
         for attr in ('_ann_drift', '_ann_consensus', '_ann_slope',
-                     '_ann_r2', '_ann_flags'):
+                     '_ann_r2', '_ann_flags', '_ann_overhead'):
             setattr(self, attr, None)
         self._adv_hover_data = {}
 
@@ -1105,6 +1191,7 @@ class ResultsDashboard:
             (self._adv_ax_slope,     'Regression Slope',           'Slope'),
             (self._adv_ax_r2,        'R\u00b2 (Goodness of Fit)',        'R\u00b2'),
             (self._adv_ax_flags,     'Detection Flags per Round',  'Count'),
+            (self._adv_ax_overhead,  'Overhead per Round',         'Time (s)'),
         ]
         for ax, title, ylabel in titles:
             ax.set_title(title, color=HDR_FG, fontsize=10,
@@ -1180,6 +1267,23 @@ class ResultsDashboard:
             self._adv_hover_data.setdefault(
                 id(self._adv_ax_flags), []).append(
                     (rs, n_flagged, short, c))
+
+            # Overhead time per round
+            t_wo = [d.get('time_without_det', 0) for d in mdata]
+            t_w  = [d.get('time_with_det', 0) for d in mdata]
+            self._adv_ax_overhead.plot(
+                rs, t_wo, color=c, lw=1.6,
+                label=f'{short} w/o det', marker='o', markersize=2.5)
+            self._adv_ax_overhead.plot(
+                rs, t_w, color=c, lw=1.0,
+                linestyle='--', alpha=0.7,
+                label=f'{short} w/ det')
+            self._adv_hover_data.setdefault(
+                id(self._adv_ax_overhead), []).append(
+                    (rs, t_wo, f'{short} w/o det', c))
+            self._adv_hover_data.setdefault(
+                id(self._adv_ax_overhead), []).append(
+                    (rs, t_w, f'{short} w/ det', c))
 
         for ax in axes:
             handles, labels = ax.get_legend_handles_labels()
