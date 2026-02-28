@@ -1,15 +1,15 @@
 """
 Federated Learning Live Results Dashboard
-==========================================
-Modern split-panel tkinter window with embedded matplotlib charts.
+Features:
+    [Live Charts] 
+            accuracy + loss line graphs that update in real-time per round
+            click any legend swatch to show/hide a series across all graphs
+    [Round Table]  
+            shows per-round metrics for the selected experiment, updated live after each experiment
+    [Summary]      
+            final-results table + comparison bar charts
 
-Layout:
-  header bar + progress strip
-  sidebar (experiment status list) | content notebook
-    [Live Charts]  – accuracy + loss line charts, live-updated per round
-                     click any legend swatch to show/hide that series
-    [Round Table]  – per-round metric rows for selected experiment
-    [Summary]      – final-results table + comparison bar charts
+    [Advanced Metrics] 
 
 Thread-safety: worker -> GUI via a Queue, drained every 80 ms.
 """
@@ -47,7 +47,7 @@ LINE_COLOURS = [
 FONT_UI   = 'Segoe UI'
 FONT_MONO = 'Consolas'
 
-# Column tooltip descriptions
+# Round table headings and their descriptions
 ROUND_COL_TIPS = {
     'Round':                 'Simulation round number',
     'Average Accuracy':      'Mean accuracy across all nodes',
@@ -59,10 +59,11 @@ ROUND_COL_TIPS = {
     'Drift Std':             'Standard deviation of parameter drift',
     'Consensus':             'Global consensus score \u2014 higher means more agreement',
     'Slope':                 'Regression slope of accuracy over recent window',
-    'R\u00b2':                    'Coefficient of determination of accuracy regression',
+    'R\u00b2':               'Coefficient of determination of accuracy regression',
     'Flags':                 'Number of nodes flagged as anomalous this round',
 }
 
+# Summary table heading descriptions
 SUMMARY_COL_TIPS = {
     'Experiment':            'Experiment name / configuration',
     'Status':                'Completion status (Done / Failed)',
@@ -460,8 +461,8 @@ class ResultsDashboard:
         )
         self._sum_tree = self._make_tree(
             parent, cols,
-            col_widths={'Experiment': 170, 'Status': 52,
-                        'Final Acc': 68, 'Honest Acc': 68,
+            col_widths={'Experiment': 180, 'Status': 70,
+                        'Final Acc': 70, 'Honest Acc': 68,
                         'Compr. Acc': 68,
                         'Atk Impact': 64,
                         'TP': 34, 'FP': 34, 'TN': 34, 'FN': 34,
@@ -520,7 +521,7 @@ class ResultsDashboard:
         return tree
 
     def _autofit_columns(self, tree):
-        """Resize every column to fit the widest heading or data value."""
+        #Resize every column to fit the widest heading or data value.
         import tkinter.font as tkfont
         heading_font = tkfont.Font(family=FONT_UI, size=9, weight='bold')
         data_font    = tkfont.Font(family=FONT_MONO, size=9)
@@ -655,7 +656,7 @@ class ResultsDashboard:
                             if md.get('tp', 0) > 0:
                                 res['detection']['detection_time'] = md['round']
                                 break
-                    # Pull overhead averages from metrics if not in result
+                    # Pull overhead averages from metrics
                     if mdata and 'overhead_avg' not in res:
                         t_wo = [d.get('time_without_det', 0) for d in mdata if 'time_without_det' in d]
                         t_w  = [d.get('time_with_det', 0) for d in mdata if 'time_with_det' in d]
@@ -683,7 +684,7 @@ class ResultsDashboard:
 
     # Progress bar
     def _set_progress(self, frac: float):
-        w = self._prog_c.winfo_width() or 1300
+        w = self._prog_c.winfo_width() or 1200
         fill_w = int(w * max(0.005, frac))
         self._prog_c.coords(self._prog_r, 0, 0, fill_w, 14)
         pct = int(frac * 100)
@@ -758,7 +759,7 @@ class ResultsDashboard:
 
         SNAP_PX = 22  # pixels
 
-        # Remove old annotation regardless
+        # Remove old annotation
         old = getattr(self, ann_attr, None)
         if old is not None:
             try:
@@ -821,7 +822,7 @@ class ResultsDashboard:
             for sp in ax.spines.values(): sp.set_edgecolor(BORDER)
             ax.grid(True, color=BORDER, linestyle='--', linewidth=0.55, alpha=0.9)
 
-        # Accuracy axis: always fixed 0 -> 1 so scale never jumps
+        # Accuracy axis: always fixed from 0 to 1 so that the scale never jumps
         ax_a.set_ylim(0.0, 1.05)
 
         drawn = False
@@ -844,7 +845,7 @@ class ResultsDashboard:
             ax_a.plot(rs, accs,   **kw)
             ax_l.plot(rs, losses, **kw)
 
-            # Only register visible series for hover
+            # Only register graphs that aren't hidden for hover
             if not hidden:
                 self._hover_data.setdefault(id(ax_a), []).append((rs, accs,   short, c))
                 self._hover_data.setdefault(id(ax_l), []).append((rs, losses, short, c))
@@ -854,7 +855,7 @@ class ResultsDashboard:
             drawn = True
 
         if drawn:
-            # Stable loss scale: only ever grows, never shrinks
+            # So that loss scale only ever grows, never shrinks
             ax_l.set_ylim(bottom=0, top=max(self._loss_ymax, 0.5))
             for ax in (ax_a, ax_l):
                 leg = ax.legend(fontsize=7,
@@ -962,13 +963,13 @@ class ResultsDashboard:
         self._sum_fig.tight_layout(pad=2)
         self._sum_canvas.draw_idle()
 
-    # Advanced metrics tab (6 charts: drift, consensus, slope, R², flags, overhead)
+    # Advanced metrics tab (drift, consensus, slope, R², flags, overhead)
     def _build_advanced_tab(self, parent):
         import matplotlib.pyplot as plt
         from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
         from matplotlib.gridspec import GridSpec
 
-        # Fixed wide figure so all 6 charts are fully visible
+        # Fixed wide figure so that all 6 charts are fully visible
         fig = plt.figure(figsize=(18, 5.5))
         fig.patch.set_facecolor(SURFACE)
         gs = GridSpec(2, 9, figure=fig,
@@ -983,6 +984,7 @@ class ResultsDashboard:
         self._adv_ax_overhead  = fig.add_subplot(gs[1, 6:9])
 
         titles = [
+            #Graph titles and axis labels for the advanced metrics graphs
             (self._adv_ax_drift,     'Drift per Round',            'Drift'),
             (self._adv_ax_consensus, 'Consensus & Peer Dev',       'Value'),
             (self._adv_ax_slope,     'Regression Slope',           'Slope'),
@@ -1227,7 +1229,7 @@ class ResultsDashboard:
                 id(self._adv_ax_drift), []).append(
                     (rs, drift_mean, f'{short} mean', c))
 
-            # Consensus + peer deviation
+            # Consensus Score and  peer deviation
             consensus = [d.get('consensus', 0)    for d in mdata]
             peer_dev  = [d.get('peer_dev_mean', 0) for d in mdata]
             self._adv_ax_consensus.plot(
@@ -1240,7 +1242,7 @@ class ResultsDashboard:
                 id(self._adv_ax_consensus), []).append(
                     (rs, consensus, f'{short} consensus', c))
 
-            # Slope (own chart)
+            # Regression Slope chart
             slopes = [d.get('slope', 0) for d in mdata]
             self._adv_ax_slope.plot(
                 rs, slopes, color=c, lw=1.6,
@@ -1249,7 +1251,7 @@ class ResultsDashboard:
                 id(self._adv_ax_slope), []).append(
                     (rs, slopes, short, c))
 
-            # R² (own chart)
+            # R² (goodness of fit) chart 
             r_sqs = [d.get('r_squared', 0) for d in mdata]
             self._adv_ax_r2.plot(
                 rs, r_sqs, color=c, lw=1.6,
