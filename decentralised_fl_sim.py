@@ -42,6 +42,8 @@ class SimulationConfig:
     balance_kappa: float = 1.0 # for balance aggregation
     ubar_rho: float = 0.4 # for ubar
 
+    partition_alpha: float = 0.5  # Dirichlet alpha for non-IID partitioning (lower = more heterogeneous)
+
     def __post_init__(self):
         if not (0.0 <= self.attack_ratio <= 0.5):
             raise ValueError(f"attack_ratio must be between 0.0 and 0.5, got {self.attack_ratio}")
@@ -475,7 +477,8 @@ class DecentralisedSimulator:
         
         # Partition data
         train_partitions, test_partitions = create_leaf_client_partitions(
-            train_ds, test_ds, self.config.num_nodes, self.config.seed
+            train_ds, test_ds, self.config.num_nodes, self.config.seed,
+            alpha=self.config.partition_alpha
         )
         
         self.train_partitions = train_partitions
@@ -1044,6 +1047,10 @@ def main():
     parser.add_argument("--balance-alpha", type=float, default=0.5)
     parser.add_argument("--ubar-rho", type=float, default=0.4)
     
+    # Partitioning
+    parser.add_argument("--partition-alpha", type=float, default=0.5,
+                        help="Dirichlet alpha for non-IID data partitioning (lower = more heterogeneous)")
+    
     # Other
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=str, default="results/experiment.json")
@@ -1081,6 +1088,7 @@ def main():
         balance_kappa=args.balance_kappa,
         balance_alpha=args.balance_alpha,
         ubar_rho=args.ubar_rho,
+        partition_alpha=args.partition_alpha,
         seed=args.seed
     )
     

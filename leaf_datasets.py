@@ -181,18 +181,56 @@ def load_leaf_dataset(dataset_name: str, data_path: str):
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
 
-def create_leaf_client_partitions(train_ds, test_ds, num_clients: int, seed: int = 42):
-    """Partition data across clients."""
-    np.random.seed(seed)
-    
-    # Simple random partition
-    train_size = len(train_ds)
-    test_size = len(test_ds)
-    
-    train_indices = np.random.permutation(train_size)
-    test_indices = np.random.permutation(test_size)
-    
-    train_partitions = np.array_split(train_indices, num_clients)
-    test_partitions = np.array_split(test_indices, num_clients)
-    
+def _dirichlet_partition(targets, num_clients: int, alpha: float, rng: np.random.RandomState):
+    """Partition indices using a Dirichlet distribution for non-IID label skew.
+
+    For each class, samples proportions from Dir(alpha) over clients and
+    allocates the corresponding fraction of that class's indices to each client.
+    Every client is guaranteed at least one sample.
+    """
+    targets = np.array(targets)
+    classes = np.unique(targets)
+    client_indices = [[] for _ in range(num_clients)]
+
+    for c in classes:
+        class_idx = np.where(targets == c)[0]
+        rng.shuffle(class_idx)
+        # Draw Dirichlet proportions and compute split points
+        proportions = rng.dirichlet(np.full(num_clients, alpha))
+        splits = (np.cumsum(proportions) * len(class_idx)).astype(int)[:-1]
+        for client_id, chunk in enumerate(np.split(class_idx, splits)):
+            client_indices[client_id].extend(chunk.tolist())
+
+    # Guarantee every client has at least one sample
+    for client_id in range(num_clients):
+        if len(client_indices[client_id]) == 0:
+            # Steal one sample from the largest client
+            donor = max(range(num_clients), key=lambda i: len(client_indices[i]))
+            client_indices[client_id].append(client_indices[donor].pop())
+
+    return [np.array(idx) for idx in client_indices]
+
+
+def create_leaf_client_partitions(train_ds, test_ds, num_clients: int, seed: int = 42,
+                                  alpha: float = 0.5):
+    """Partition data across clients.
+
+    When *alpha* is provided (default 0.5), a Dirichlet-based non-IID split is
+    used so that each client receives a skewed class distribution.  Higher alpha
+    values approach IID behaviour; lower values increase heterogeneity.
+    """
+    rng = np.random.RandomState(seed)
+
+    train_targets = np.array(train_ds.targets)
+    test_targets  = np.array(test_ds.targets)
+
+    train_partitions = _dirichlet_partition(train_targets, num_clients, alpha, rng)
+    test_partitions  = _dirichlet_partition(test_targets,  num_clients, alpha, rng)
+
+    # Print a brief heterogeneity summary
+    classes_per_client = [len(np.unique(train_targets[part])) for part in train_partitions]
+    print(f"Partitioned data (non-IID, alpha={alpha})")
+    print(f"   Client class counts: min={min(classes_per_client)}, "
+          f"max={max(classes_per_client)} classes per client")
+
     return train_partitions, test_partitions
