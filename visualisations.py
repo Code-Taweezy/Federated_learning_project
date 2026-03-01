@@ -8,10 +8,9 @@ import seaborn as sns
 import numpy as np
 import pandas as pd
 import networkx as nx
-from typing import List, Dict, Optional
+from typing import Dict
 import json
 import os
-from scipy import stats
 
 # Set style
 sns.set_style("whitegrid")
@@ -21,7 +20,7 @@ plt.rcParams['savefig.dpi'] = 300
 plt.rcParams['font.size'] = 10
 
 
-""" Visualisation Functions"""
+# ── Visualisation Functions ──────────────────────────────────────
 
 
 def plot_accuracy_evolution(results_file: str, output_path: str):
@@ -158,7 +157,7 @@ def plot_convergence_comparison(results_files: Dict[str, str], output_path: str)
     print(f"Saved: {output_path}")
 
 
-""" Analysis  Functions """
+# ── Analysis Functions ───────────────────────────────────────────
 
 
 def analyze_robustness(results_file: str) -> Dict:
@@ -352,7 +351,7 @@ def plot_robustness_comparison(results_files: Dict[str, str], output_path: str):
     print(f"Saved: {output_path}")
 
 
-"""Complete Analysis and Comparison Functions"""
+# ── Complete Analysis and Comparison Functions ───────────────────
 
 
 def analyze_experiment(results_file: str, output_dir: str):
@@ -393,7 +392,7 @@ def compare_experiments(results_files: Dict[str, str], output_dir: str):
 
 
 
-"""Main Execution"""
+# ── Main Execution ───────────────────────────────────────────────
 
 
 if __name__ == "__main__":
