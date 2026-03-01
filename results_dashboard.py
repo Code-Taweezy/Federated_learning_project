@@ -16,7 +16,7 @@ Thread-safety: worker -> GUI via a Queue, drained every 80 ms.
 
 import queue
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 
 # Design tokens  
