@@ -38,10 +38,12 @@ The dashboard also allows users to modify experiment parameters between runs wit
 
 Experimental results are logged in real time to Google Sheets via the Google Cloud API (`sheets_exporter.py`), recording:
 - Compute time
-- Final model accuracy
+- Final model accuracySS
 - Honest nodes accepted
 - Compromised nodes accepted
 - Attack impact (relative to 0.0 attack baseline)
+
+### My proposed verification layer
 
 ## Getting Started
 
