@@ -157,6 +157,86 @@ def plot_convergence_comparison(results_files: Dict[str, str], output_path: str)
     print(f"Saved: {output_path}")
 
 
+# ── Verification Visualisations ──────────────────────────────────
+
+
+def plot_trust_evolution(results_file: str, output_path: str):
+    """Plot per-node trust score evolution across rounds."""
+    with open(results_file, 'r') as f:
+        data = json.load(f)
+
+    ver = data.get('results', {}).get('verification', {})
+    trust_history = ver.get('trust_score_history', {})
+    if not trust_history:
+        print("  No trust history data – skipping trust evolution plot.")
+        return
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    compromised = set(data.get('compromised_nodes', []))
+    n_nodes = data['config']['num_nodes']
+
+    for nid_str, scores in sorted(trust_history.items(), key=lambda x: int(x[0])):
+        nid = int(nid_str)
+        rounds = list(range(1, len(scores) + 1))
+        style = dict(linewidth=2.0, alpha=0.85) if nid in compromised else dict(linewidth=1.2, alpha=0.55)
+        colour = 'red' if nid in compromised else 'steelblue'
+        label = f'Node {nid} (malicious)' if nid in compromised else (f'Node {nid}' if n_nodes <= 15 else None)
+        ax.plot(rounds, scores, color=colour, label=label, **style)
+
+    ax.set_xlabel('Round', fontsize=13, fontweight='bold')
+    ax.set_ylabel('Trust Score', fontsize=13, fontweight='bold')
+    ax.set_title('Trust Score Evolution', fontsize=15, fontweight='bold')
+    ax.set_ylim(-0.05, 1.05)
+    ax.axhline(y=0.5, color='grey', linestyle='--', alpha=0.4, label='threshold 0.5')
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(fontsize=9, loc='lower left', ncol=2)
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(output_path, bbox_inches='tight')
+    plt.close()
+    print(f"Saved: {output_path}")
+
+
+def plot_rescue_counts(results_file: str, output_path: str):
+    """Bar chart of Phase-2 rescue counts per node."""
+    with open(results_file, 'r') as f:
+        data = json.load(f)
+
+    ver = data.get('results', {}).get('verification', {})
+    rescue_map = ver.get('rescue_counts', {})
+    if not rescue_map:
+        print("  No rescue count data – skipping rescue counts plot.")
+        return
+
+    compromised = set(data.get('compromised_nodes', []))
+    node_ids = sorted(rescue_map.keys(), key=lambda x: int(x))
+    counts = [rescue_map[n] for n in node_ids]
+    colours = ['red' if int(n) in compromised else 'steelblue' for n in node_ids]
+    labels = [f'N{n}' for n in node_ids]
+
+    fig, ax = plt.subplots(figsize=(max(8, len(node_ids) * 0.55), 5))
+    bars = ax.bar(labels, counts, color=colours, edgecolor='white', linewidth=0.5)
+
+    # Legend patches
+    from matplotlib.patches import Patch
+    legend_elems = [Patch(facecolor='steelblue', label='Honest'),
+                    Patch(facecolor='red', label='Malicious')]
+    ax.legend(handles=legend_elems, fontsize=10)
+
+    ax.set_xlabel('Node', fontsize=13, fontweight='bold')
+    ax.set_ylabel('Times Rescued', fontsize=13, fontweight='bold')
+    ax.set_title('Phase-2 Rescue Counts per Node', fontsize=15, fontweight='bold')
+    ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
+    ax.grid(axis='y', alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(output_path, bbox_inches='tight')
+    plt.close()
+    print(f"Saved: {output_path}")
+
+
 # ── Analysis Functions ───────────────────────────────────────────
 
 
@@ -363,7 +443,14 @@ def analyze_experiment(results_file: str, output_dir: str):
     # Generate visualizations
     plot_accuracy_evolution(results_file, f"{output_dir}/accuracy.png")
     plot_network_topology(results_file, f"{output_dir}/topology.png")
-    
+
+    # Verification plots (only when data exists)
+    with open(results_file, 'r') as f:
+        _data = json.load(f)
+    if _data.get('results', {}).get('verification'):
+        plot_trust_evolution(results_file, f"{output_dir}/trust_evolution.png")
+        plot_rescue_counts(results_file, f"{output_dir}/rescue_counts.png")
+
     # Generate analysis
     analysis = analyze_robustness(results_file)
     if "error" not in analysis:

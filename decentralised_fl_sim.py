@@ -44,6 +44,18 @@ class SimulationConfig:
 
     partition_alpha: float = 0.5  # Dirichlet alpha for non-IID partitioning (lower = more heterogeneous)
 
+    # Verification layer parameters
+    verification_enabled: bool = True          # Master switch
+    verification_epsilon: float = 0.01         # Performance threshold (accuracy delta)
+    trust_decay: float = 0.9                   # β — exponential decay for trust score
+    trust_initial: float = 0.5                 # T_i^0 — starting trust for all nodes
+    trust_penalty: float = 0.3                 # δ_penalty — trust reduction on confirmed flag
+    trust_boost: float = 0.1                   # δ_boost — trust increase on rescue
+    z_low: float = 1.0                         # Lower bound for ambiguous z-score range
+    z_high: float = 3.0                        # Upper bound for ambiguous z-score range
+    verification_history_window: int = 5       # w — rounds of history for consistency checks
+    rescue_revocation_rounds: int = 3          # r_revoke — consecutive anomalous rounds to revoke
+
     def __post_init__(self):
         if not (0.0 <= self.attack_ratio <= 0.5):
             raise ValueError(f"attack_ratio must be between 0.0 and 0.5, got {self.attack_ratio}")
@@ -170,13 +182,14 @@ class FedAvgAggregator :
         self.node_id = node_id
         self.stats = {"accepted": 0, "total": 0}
     
-    def aggregate (self, own_model: Dict[str, torch.Tensor], neighbor_models: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+    def aggregate (self, own_model: Dict[str, torch.Tensor], neighbor_models: List[Dict[str, torch.Tensor]], neighbor_indices: List[int] = None) -> Tuple[Dict[str, torch.Tensor], List[int], List[int]]:
         #simple averaging of own model and neighbor models
         all_models = [own_model] + neighbor_models 
         self.stats["total"] += len(neighbor_models)
         self.stats["accepted"] += len(neighbor_models)
 
-        return _average_state_dicts(all_models)
+        accepted = list(neighbor_indices) if neighbor_indices is not None else []
+        return _average_state_dicts(all_models), accepted, []
     
 class BALANCEAggregator:
     """BALANCE: distance-threshold filtering with weighted aggregation."""
@@ -204,23 +217,35 @@ class BALANCEAggregator:
         lambda_t = self.current_round / max(1, self.total_rounds)
         return self.config.balance_gamma * np.exp(-self.config.balance_kappa * lambda_t) * own_norm
 
-    def aggregate(self, own_model: Dict[str, torch.Tensor], neighbor_models: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+    def aggregate(self, own_model: Dict[str, torch.Tensor], neighbor_models: List[Dict[str, torch.Tensor]], neighbor_indices: List[int] = None) -> Tuple[Dict[str, torch.Tensor], List[int], List[int]]:
         self.current_round += 1
         if not neighbor_models:
-            return own_model
+            return own_model, [], []
 
         threshold = self._compute_threshold(own_model)
         self.stats["thresholds"].append(threshold)
 
         accepted_models = []
-        for neighbor_model in neighbor_models:
+        accepted_indices = []
+        rejected_indices = []
+        for idx, neighbor_model in enumerate(neighbor_models):
             distance = self._model_distance(own_model, neighbor_model)
+            neighbor_id = neighbor_indices[idx] if neighbor_indices is not None else idx
             if distance <= threshold:
                 accepted_models.append(neighbor_model)
+                accepted_indices.append(neighbor_id)
+            else:
+                rejected_indices.append(neighbor_id)
 
         if not accepted_models:
-            closest = min(neighbor_models, key=lambda m: self._model_distance(own_model, m))
-            accepted_models.append(closest)
+            # Fallback: accept closest
+            closest_idx = min(range(len(neighbor_models)),
+                              key=lambda i: self._model_distance(own_model, neighbor_models[i]))
+            closest_id = neighbor_indices[closest_idx] if neighbor_indices is not None else closest_idx
+            accepted_models.append(neighbor_models[closest_idx])
+            accepted_indices.append(closest_id)
+            if closest_id in rejected_indices:
+                rejected_indices.remove(closest_id)
 
         self.stats["total"] += len(neighbor_models)
         self.stats["accepted"] += len(accepted_models)
@@ -233,7 +258,7 @@ class BALANCEAggregator:
                 self.config.balance_alpha * own_model[key]
                 + (1 - self.config.balance_alpha) * neighbor_avg[key]
             )
-        return aggregated
+        return aggregated, accepted_indices, rejected_indices
         
 class UBARAggregator: 
 
@@ -255,17 +280,22 @@ class UBARAggregator:
         }
     
     def aggregate(self, own_model: Dict[str, torch.Tensor],
-              neighbor_models: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+              neighbor_models: List[Dict[str, torch.Tensor]],
+              neighbor_indices: List[int] = None) -> Tuple[Dict[str, torch.Tensor], List[int], List[int]]:
         """Two-stage UBAR aggregation."""
         if not neighbor_models:
-            return own_model
+            return own_model, [], []
         
+        if neighbor_indices is None:
+            neighbor_indices = list(range(len(neighbor_models)))
+
         # Stage 1: Distance-based filtering
         distances = [self._compute_distance(own_model, m) for m in neighbor_models]
         num_select = max(1, int(self.config.ubar_rho * len(neighbor_models)))
         
         sorted_indices = np.argsort(distances)
         stage1_selected = [neighbor_models[i] for i in sorted_indices[:num_select]]
+        stage1_nids = [neighbor_indices[i] for i in sorted_indices[:num_select]]
         
         stage1_rate = len(stage1_selected) / max(1, len(neighbor_models))
         self.stats["stage1_rates"].append(stage1_rate)
@@ -276,26 +306,34 @@ class UBARAggregator:
             own_loss = self._compute_loss(own_model, sample_batch)
             
             stage2_selected = []
-            for model in stage1_selected:
+            stage2_nids = []
+            for model, nid in zip(stage1_selected, stage1_nids):
                 model_loss = self._compute_loss(model, sample_batch)
                 if model_loss <= own_loss:
                     stage2_selected.append(model)
+                    stage2_nids.append(nid)
             
             # Fallback
             if not stage2_selected:
                 stage2_selected = [stage1_selected[0]]
+                stage2_nids = [stage1_nids[0]]
             
             stage2_rate = len(stage2_selected) / max(1, len(stage1_selected))
             self.stats["stage2_rates"].append(stage2_rate)
             
         except StopIteration:
             stage2_selected = stage1_selected
+            stage2_nids = stage1_nids
             self.stats["stage2_rates"].append(1.0)
         
         # Statistics
         self.stats["total"] += len(neighbor_models)
         self.stats["accepted"] += len(stage2_selected)
         
+        # Compute accepted/rejected indices
+        accepted_indices = list(stage2_nids)
+        rejected_indices = [nid for nid in neighbor_indices if nid not in accepted_indices]
+
         # Aggregate
         neighbor_avg = _average_state_dicts(stage2_selected)
         
@@ -304,7 +342,7 @@ class UBARAggregator:
             aggregated[key] = (self.config.balance_alpha * own_model[key] + 
                             (1 - self.config.balance_alpha) * neighbor_avg[key])
         
-        return aggregated
+        return aggregated, accepted_indices, rejected_indices
     
     def _compute_distance(self, model1: Dict[str, torch.Tensor], model2: Dict[str, torch.Tensor]) -> float:
         total = 0.0
@@ -446,6 +484,19 @@ class DecentralisedSimulator:
         self._detection_fn = 0
         self._detection_time = None   # first round a compromised node is correctly flagged
         self._previous_states = None  # previous-round model states for drift
+
+        # Verification layer persistent state
+        self._trust_scores = [self.config.trust_initial] * self.config.num_nodes
+        self._rescue_counts = [0] * self.config.num_nodes
+        self._permanently_rescued = [False] * self.config.num_nodes
+        self._consecutive_anomalous = [0] * self.config.num_nodes
+        self._drift_history = [[] for _ in range(self.config.num_nodes)]
+        self._peer_dev_history = [[] for _ in range(self.config.num_nodes)]
+        self._verification_flags = []  # per-round verification flags
+        self._verification_flags_per_round = []  # list of per-round flag lists
+        self._verification_time_per_round = []  # per-round verification time
+        self._round_accepted = []  # per-node accepted sets (set each round)
+        self._round_rejected = []  # per-node rejected sets (set each round)
     
     def _set_seed(self):
         """Set random seeds."""
@@ -655,6 +706,8 @@ class DecentralisedSimulator:
         self.results["detection_flags_per_round"].append([])
         self.results["overhead_time"]["without_detection"].append(0.0)
         self.results["overhead_time"]["with_detection"].append(0.0)
+        self._verification_flags_per_round.append([])
+        self._verification_time_per_round.append(0.0)
 
         # Training rounds
         for round_num in range(1, self.config.num_rounds + 1):
@@ -686,7 +739,36 @@ class DecentralisedSimulator:
             })
             self.results["consensus_score_per_round"].append(consensus)
 
-            # --- Evaluation (populates accuracies for this round) ---
+            # --- Anomaly detection (timed) — BEFORE verification ---
+            t_det_start = time.time()
+            flags = self._detect_anomalies(drifts, round_num)
+            self._update_confusion_matrix(flags, round_num)
+            t_det_end = time.time()
+            detection_overhead = t_det_end - t_det_start
+            self.results["detection_flags_per_round"].append(flags)
+
+            z_scores = [f["z_score"] for f in flags] if flags else [0.0] * self.config.num_nodes
+
+            # ┌──────────────────────────────────────────┐
+            # │ VERIFICATION LAYER (post-acceptance)     │
+            # └──────────────────────────────────────────┘
+            self._verification_flags = []  # reset per-round
+            t_ver_start = time.time()
+            verification_changed = self._run_verification(
+                round_num, current_states, drifts, peer_devs, z_scores
+            )
+            t_ver_end = time.time()
+            verification_time = t_ver_end - t_ver_start
+
+            # Store verification results for this round
+            self._verification_flags_per_round.append(list(self._verification_flags))
+            self._verification_time_per_round.append(verification_time)
+
+            # If verification changed models, re-collect states
+            if verification_changed:
+                current_states = [node.get_model_state() for node in self.nodes]
+
+            # --- Evaluation (AFTER verification) ---
             self._evaluate_round(round_num)
 
             # --- Linear regression slope (over accumulated avg accuracies) ---
@@ -696,30 +778,25 @@ class DecentralisedSimulator:
                 "slope": slope, "r_squared": r_sq
             })
 
-            # --- Anomaly detection (timed) ---
-            t_det_start = time.time()
-            flags = self._detect_anomalies(drifts, round_num)
-            self._update_confusion_matrix(flags, round_num)
-            t_det_end = time.time()
-            detection_overhead = t_det_end - t_det_start
-            self.results["detection_flags_per_round"].append(flags)
-
             # --- Overhead time ---
-            time_with_detection = time_without_detection + detection_overhead
+            time_with_all = time_without_detection + detection_overhead + verification_time
             self.results["overhead_time"]["without_detection"].append(
                 time_without_detection)
             self.results["overhead_time"]["with_detection"].append(
-                time_with_detection)
+                time_with_all)
 
             # --- Structured metrics line (parsed by run_experiments.py) ---
             n_flagged = sum(1 for f in flags if f["flagged"]) if flags else 0
+            n_ver_flagged = sum(1 for vf in self._verification_flags if vf["action"] == "flagged")
+            n_ver_rescued = sum(1 for vf in self._verification_flags if vf["action"] == "rescued")
             print(
                 f"METRICS|{round_num}|{mean_drift:.6f}|{std_drift:.6f}"
                 f"|{float(np.mean(peer_devs)):.6f}|{consensus:.6f}"
                 f"|{slope:.6f}|{r_sq:.6f}"
                 f"|{n_flagged}|{self._detection_tp}|{self._detection_fp}"
                 f"|{self._detection_tn}|{self._detection_fn}"
-                f"|{time_without_detection:.6f}|{time_with_detection:.6f}"
+                f"|{time_without_detection:.6f}|{time_with_all:.6f}"
+                f"|{n_ver_flagged}|{n_ver_rescued}|{verification_time:.6f}"
             )
 
             # Store current states for next round's drift
@@ -737,6 +814,8 @@ class DecentralisedSimulator:
         
         # Each node aggregates with neighbors
         new_states = []
+        self._round_accepted = []
+        self._round_rejected = []
         
         for node_idx, node in enumerate(self.nodes):
             neighbors_idx = self.graph.get_neighbors(node_idx)
@@ -757,14 +836,356 @@ class DecentralisedSimulator:
                 else:
                     neighbor_states.append(all_states[neighbor_idx])
             
-            # Aggregate
-            new_state = node.aggregator.aggregate(own_state, neighbor_states)
+            # Aggregate — now returns accepted/rejected indices
+            new_state, accepted, rejected = node.aggregator.aggregate(
+                own_state, neighbor_states, neighbors_idx
+            )
             new_states.append(new_state)
+            self._round_accepted.append(accepted)
+            self._round_rejected.append(rejected)
         
         # Update all nodes
         for node, new_state in zip(self.nodes, new_states):
             node.set_model_state(new_state)
     
+    # ------------------------------------------------------------------
+    #  Verification Layer
+    # ------------------------------------------------------------------
+
+    def _evaluate_model(self, node_idx, model_state):
+        """
+        Evaluate a model state dict on node's LOCAL TEST SET.
+        Returns: float — accuracy in range [0.0, 1.0].
+        IMPORTANT: This must NOT modify the node's actual model.
+        """
+        node = self.nodes[node_idx]
+        original_state = node.get_model_state()  # save
+        node.set_model_state(model_state)
+        acc, _ = node.evaluate()
+        node.set_model_state(original_state)     # restore
+        return acc
+
+    def _re_aggregate(self, node_idx, accepted_models):
+        """
+        Re-aggregate using the same blending formula as the aggregation algorithm.
+        θ_new = α · θ_own + (1 - α) · mean(accepted_models)
+        """
+        if not accepted_models:
+            return self.nodes[node_idx].get_model_state()
+
+        alpha = self.config.balance_alpha
+        own_model = self.nodes[node_idx].get_model_state()
+
+        # Average accepted models
+        avg = {}
+        for key in accepted_models[0].keys():
+            stacked = torch.stack([m[key].float() for m in accepted_models])
+            avg[key] = stacked.mean(dim=0).to(accepted_models[0][key].dtype)
+
+        # Convex blend
+        result = {}
+        for key in own_model.keys():
+            result[key] = alpha * own_model[key] + (1 - alpha) * avg[key]
+
+        return result
+
+    def _verification_phase1(self, node_idx, S, R, theta_agg, acc_agg,
+                              z_scores, all_states, round_num):
+        """
+        Phase 1: Scan accepted set for malicious nodes that passed filtering.
+        Modifies S and R in-place. Returns: bool — whether any nodes were moved.
+        """
+        eps = self.config.verification_epsilon
+        z_low = self.config.z_low
+        z_high = self.config.z_high
+
+        # Pre-filter: only evaluate ambiguous nodes
+        candidates = [
+            j for j in S
+            if z_low < abs(z_scores[j]) < z_high
+            and not self._permanently_rescued[j]
+        ]
+
+        if not candidates:
+            return False
+
+        changed = False
+
+        for j in candidates:
+            # Leave-one-out: re-aggregate without node j
+            S_without_j = [k for k in S if k != j]
+            if not S_without_j:
+                continue  # can't remove the only accepted node
+
+            models_without_j = [all_states[k] for k in S_without_j]
+            theta_without_j = self._re_aggregate(node_idx, models_without_j)
+            acc_without_j = self._evaluate_model(node_idx, theta_without_j)
+
+            delta_perf = acc_without_j - acc_agg
+
+            if delta_perf > eps:
+                # Performance gate triggered — check historical consistency
+                signals = 0
+
+                # Signal 1: Low trust
+                sig_low_trust = self._trust_scores[j] < 0.3
+                if sig_low_trust:
+                    signals += 1
+
+                # Signal 2: High historical drift
+                sig_high_drift = False
+                if len(self._drift_history[j]) >= 2:
+                    node_mean_drift = sum(self._drift_history[j]) / len(self._drift_history[j])
+                    all_mean_drifts = []
+                    for i in range(self.config.num_nodes):
+                        if self._drift_history[i]:
+                            all_mean_drifts.append(
+                                sum(self._drift_history[i]) / len(self._drift_history[i])
+                            )
+                    pop_mean_drift = sum(all_mean_drifts) / len(all_mean_drifts) if all_mean_drifts else 0.0
+                    if node_mean_drift > pop_mean_drift:
+                        sig_high_drift = True
+                        signals += 1
+
+                # Signal 3: High historical peer deviation
+                sig_high_pdev = False
+                if len(self._peer_dev_history[j]) >= 2:
+                    node_mean_pdev = sum(self._peer_dev_history[j]) / len(self._peer_dev_history[j])
+                    all_mean_pdevs = []
+                    for i in range(self.config.num_nodes):
+                        if self._peer_dev_history[i]:
+                            all_mean_pdevs.append(
+                                sum(self._peer_dev_history[i]) / len(self._peer_dev_history[i])
+                            )
+                    pop_mean_pdev = sum(all_mean_pdevs) / len(all_mean_pdevs) if all_mean_pdevs else 0.0
+                    if node_mean_pdev > pop_mean_pdev:
+                        sig_high_pdev = True
+                        signals += 1
+
+                # Flagging rule: performance gate AND ≥2 of 3 historical signals
+                if signals >= 2:
+                    trust_before = self._trust_scores[j]
+                    S.remove(j)
+                    R.append(j)
+                    self._trust_scores[j] = max(0.0, self._trust_scores[j] - self.config.trust_penalty)
+                    changed = True
+
+                    self._verification_flags.append({
+                        "node_id": j,
+                        "phase": 1,
+                        "action": "flagged",
+                        "delta_perf": float(delta_perf),
+                        "trust_before": float(trust_before),
+                        "trust_after": float(self._trust_scores[j]),
+                        "signals": {
+                            "low_trust": sig_low_trust,
+                            "high_drift": sig_high_drift,
+                            "high_peer_dev": sig_high_pdev,
+                        },
+                    })
+
+        return changed
+
+    def _verification_phase2(self, node_idx, S, R, theta_agg, acc_agg,
+                              z_scores, drifts, peer_devs, all_states, round_num):
+        """
+        Phase 2: Rescue honest nodes wrongly excluded by aggregation filter.
+        Modifies S and R in-place. Returns: bool — whether any nodes were rescued.
+        """
+        eps = self.config.verification_epsilon
+        z_high = self.config.z_high
+
+        # Pre-filter: only evaluate nodes that aren't clearly anomalous
+        candidates = [
+            k for k in R
+            if abs(z_scores[k]) < z_high
+            and not self._permanently_rescued[k]
+        ]
+
+        if not candidates:
+            return False
+
+        # Compute median peer deviation for signal 2
+        sorted_pdevs = sorted(peer_devs)
+        median_peer_dev = float(sorted_pdevs[len(sorted_pdevs) // 2])
+
+        # Compute drift threshold for signal 3
+        mu_drift = sum(drifts) / len(drifts)
+        variance = sum((d - mu_drift) ** 2 for d in drifts) / len(drifts)
+        sigma_drift = variance ** 0.5
+
+        changed = False
+
+        for k in candidates:
+            signals = 0
+
+            # Signal 1: Trust score — historically honest
+            sig_trust_ok = self._trust_scores[k] >= 0.5
+            if sig_trust_ok:
+                signals += 1
+
+            # Signal 2: Peer deviation — not an outlier among peers
+            sig_pdev_ok = peer_devs[k] <= median_peer_dev
+            if sig_pdev_ok:
+                signals += 1
+
+            # Signal 3: Drift — within expected range
+            sig_drift_ok = drifts[k] <= mu_drift + 1.5 * sigma_drift
+            if sig_drift_ok:
+                signals += 1
+
+            # Signal 4: Performance — inclusion doesn't hurt
+            S_with_k = S + [k]
+            models_with_k = [all_states[j] for j in S_with_k]
+            theta_with_k = self._re_aggregate(node_idx, models_with_k)
+            acc_with_k = self._evaluate_model(node_idx, theta_with_k)
+            sig_perf_ok = acc_with_k >= acc_agg - eps
+            if sig_perf_ok:
+                signals += 1
+
+            # Rescue rule: ≥3 of 4 signals
+            if signals >= 3:
+                R.remove(k)
+                S.append(k)
+                old_trust = self._trust_scores[k]
+                self._trust_scores[k] = min(1.0, self._trust_scores[k] + self.config.trust_boost)
+                self._rescue_counts[k] += 1
+                changed = True
+
+                self._verification_flags.append({
+                    "node_id": k,
+                    "phase": 2,
+                    "action": "rescued",
+                    "delta_perf": float(acc_with_k - acc_agg),
+                    "trust_before": float(old_trust),
+                    "trust_after": float(self._trust_scores[k]),
+                    "signals": {
+                        "trust_ok": sig_trust_ok,
+                        "peer_dev_ok": sig_pdev_ok,
+                        "drift_ok": sig_drift_ok,
+                        "performance_ok": sig_perf_ok,
+                    },
+                })
+
+        return changed
+
+    def _verification_phase4(self, round_num, z_scores):
+        """
+        Phase 4: Update trust scores for all nodes not already modified by
+        Phases 1/2. Handle automatic rescue promotion and revocation.
+        """
+        beta = self.config.trust_decay
+        z_high = self.config.z_high
+        r_revoke = self.config.rescue_revocation_rounds
+
+        # Collect node IDs already modified by phases 1 and 2 this round
+        modified_nodes = set()
+        for flag in self._verification_flags:
+            if flag.get("action") in ("flagged", "rescued"):
+                modified_nodes.add(flag["node_id"])
+
+        # Update trust for non-modified nodes
+        for i in range(self.config.num_nodes):
+            if i not in modified_nodes:
+                was_flagged = abs(z_scores[i]) > 2.0  # first-pass flag threshold
+                self._trust_scores[i] = (
+                    beta * self._trust_scores[i]
+                    + (1 - beta) * (0.0 if was_flagged else 1.0)
+                )
+
+        # Automatic rescue promotion
+        for i in range(self.config.num_nodes):
+            promotion_threshold = -(-round_num // 2)  # equivalent to math.ceil(round_num / 2)
+            if self._rescue_counts[i] >= promotion_threshold and not self._permanently_rescued[i]:
+                self._permanently_rescued[i] = True
+
+        # Revocation check for permanently rescued nodes
+        for i in range(self.config.num_nodes):
+            if self._permanently_rescued[i]:
+                if abs(z_scores[i]) > z_high:
+                    self._consecutive_anomalous[i] += 1
+                else:
+                    self._consecutive_anomalous[i] = 0
+
+                if self._consecutive_anomalous[i] >= r_revoke:
+                    self._permanently_rescued[i] = False
+                    self._rescue_counts[i] = 0
+                    self._consecutive_anomalous[i] = 0
+
+    def _run_verification(self, round_num, all_states, drifts, peer_devs, z_scores):
+        """
+        Called once per round, after aggregation and first-pass detection.
+        Returns: corrected: bool — whether any changes were made.
+        """
+        if not self.config.verification_enabled:
+            return False
+        if self.config.aggregation == "fedavg":
+            return False
+
+        # Update history buffers (BEFORE running phases)
+        w = self.config.verification_history_window
+        for i in range(self.config.num_nodes):
+            self._drift_history[i].append(drifts[i])
+            if len(self._drift_history[i]) > w:
+                self._drift_history[i].pop(0)
+            self._peer_dev_history[i].append(peer_devs[i])
+            if len(self._peer_dev_history[i]) > w:
+                self._peer_dev_history[i].pop(0)
+
+        any_changed = False
+
+        for node_idx in range(self.config.num_nodes):
+            S = list(self._round_accepted[node_idx])  # copy — will be modified
+            R = list(self._round_rejected[node_idx])   # copy
+
+            # Auto-include permanently rescued nodes that appear in R
+            for pr_node in list(R):
+                if self._permanently_rescued[pr_node]:
+                    R.remove(pr_node)
+                    S.append(pr_node)
+
+            if not R and not S:
+                continue  # nothing to verify
+
+            theta_agg = all_states[node_idx]  # initial aggregated model for this node
+            acc_agg = self._evaluate_model(node_idx, theta_agg)
+
+            changed = False
+
+            # ── PHASE 1 ──
+            changed_p1 = self._verification_phase1(
+                node_idx, S, R, theta_agg, acc_agg,
+                z_scores, all_states, round_num
+            )
+            if changed_p1:
+                changed = True
+
+            # ── PHASE 2 ──
+            changed_p2 = self._verification_phase2(
+                node_idx, S, R, theta_agg, acc_agg,
+                z_scores, drifts, peer_devs, all_states, round_num
+            )
+            if changed_p2:
+                changed = True
+
+            # ── PHASE 3: Re-aggregate if anything changed ──
+            if changed:
+                accepted_models = [all_states[j] for j in S]
+                if accepted_models:
+                    theta_final = self._re_aggregate(node_idx, accepted_models)
+                    self.nodes[node_idx].set_model_state(theta_final)
+                    all_states[node_idx] = theta_final
+                any_changed = True
+
+            # Update accepted/rejected records
+            self._round_accepted[node_idx] = S
+            self._round_rejected[node_idx] = R
+
+        # ── PHASE 4: Trust updates and promotion ──
+        self._verification_phase4(round_num, z_scores)
+
+        return any_changed
+
     def _evaluate_round(self, round_num: int):
         """Evaluate all nodes."""
         accuracies = []
@@ -845,6 +1266,23 @@ class DecentralisedSimulator:
             print(f"\nOverhead (avg per round):")
             print(f"  Without detection: {avg_wo:.4f}s")
             print(f"  With detection:    {avg_w:.4f}s")
+
+        # --- Verification layer summary ---
+        if self.config.verification_enabled and self.config.aggregation != "fedavg":
+            total_p1 = sum(
+                sum(1 for vf in rflags if vf["action"] == "flagged")
+                for rflags in self._verification_flags_per_round
+            )
+            total_p2 = sum(
+                sum(1 for vf in rflags if vf["action"] == "rescued")
+                for rflags in self._verification_flags_per_round
+            )
+            perm_rescued = [i for i, p in enumerate(self._permanently_rescued) if p]
+            print(f"\nVerification Layer:")
+            print(f"  Phase 1 flags (total): {total_p1}")
+            print(f"  Phase 2 rescues (total): {total_p2}")
+            print(f"  Permanently rescued nodes: {perm_rescued}")
+            print(f"  Final trust scores: {[round(t, 3) for t in self._trust_scores]}")
     
     def save_results(self, filepath: str):
         """Save results to JSON with run timestamp and per-round table."""
@@ -891,6 +1329,14 @@ class DecentralisedSimulator:
             if adv_idx < len(self.results["overhead_time"]["without_detection"]):
                 row["time_without_detection"] = self.results["overhead_time"]["without_detection"][adv_idx]
                 row["time_with_detection"]    = self.results["overhead_time"]["with_detection"][adv_idx]
+            # Verification layer per-round data
+            if adv_idx < len(self._verification_flags_per_round):
+                vflags = self._verification_flags_per_round[adv_idx]
+                row["verification_flags"] = vflags
+                row["verification_time"] = self._verification_time_per_round[adv_idx] if adv_idx < len(self._verification_time_per_round) else 0.0
+                row["nodes_flagged_phase1"] = sum(1 for vf in vflags if vf.get("action") == "flagged")
+                row["nodes_rescued_phase2"] = sum(1 for vf in vflags if vf.get("action") == "rescued")
+                row["permanently_rescued"] = [i for i, p in enumerate(self._permanently_rescued) if p]
             round_results.append(row)
 
         final_accs = self.results["accuracies"][-1]
@@ -917,6 +1363,15 @@ class DecentralisedSimulator:
                 "true_negatives":  self._detection_tn,
                 "false_negatives": self._detection_fn,
                 "detection_time":  self._detection_time,
+                "precision": self._detection_tp / max(1, self._detection_tp + self._detection_fp),
+                "recall": self._detection_tp / max(1, self._detection_tp + self._detection_fn),
+                "f1_score": (
+                    2 * (self._detection_tp / max(1, self._detection_tp + self._detection_fp))
+                      * (self._detection_tp / max(1, self._detection_tp + self._detection_fn))
+                    / max(1e-12,
+                          (self._detection_tp / max(1, self._detection_tp + self._detection_fp))
+                        + (self._detection_tp / max(1, self._detection_tp + self._detection_fn)))
+                ),
             } if self.attacker else None,
             # Overhead timing
             "overhead_avg": {
@@ -929,6 +1384,19 @@ class DecentralisedSimulator:
                     if self.results["overhead_time"]["with_detection"] else None
                 ),
             },
+            # Verification layer summary
+            "verification": {
+                "total_phase1_flags": sum(
+                    sum(1 for vf in rflags if vf.get("action") == "flagged")
+                    for rflags in self._verification_flags_per_round
+                ),
+                "total_phase2_rescues": sum(
+                    sum(1 for vf in rflags if vf.get("action") == "rescued")
+                    for rflags in self._verification_flags_per_round
+                ),
+                "permanently_rescued_nodes": [i for i, p in enumerate(self._permanently_rescued) if p],
+                "final_trust_scores": [round(t, 6) for t in self._trust_scores],
+            } if self.config.verification_enabled and self.config.aggregation != "fedavg" else None,
         }
 
         output = {
@@ -1051,6 +1519,30 @@ def main():
     parser.add_argument("--partition-alpha", type=float, default=0.5,
                         help="Dirichlet alpha for non-IID data partitioning (lower = more heterogeneous)")
     
+    # Verification layer
+    parser.add_argument("--verification", dest="verification", action="store_true", default=True,
+                        help="Enable post-acceptance verification layer (default: enabled)")
+    parser.add_argument("--no-verification", dest="verification", action="store_false",
+                        help="Disable post-acceptance verification layer")
+    parser.add_argument("--verification-epsilon", type=float, default=0.01,
+                        help="Performance threshold (accuracy delta) for verification")
+    parser.add_argument("--trust-decay", type=float, default=0.9,
+                        help="Exponential decay for trust score")
+    parser.add_argument("--trust-initial", type=float, default=0.5,
+                        help="Starting trust for all nodes")
+    parser.add_argument("--trust-penalty", type=float, default=0.3,
+                        help="Trust reduction on confirmed flag")
+    parser.add_argument("--trust-boost", type=float, default=0.1,
+                        help="Trust increase on rescue")
+    parser.add_argument("--z-low", type=float, default=1.0,
+                        help="Lower bound for ambiguous z-score range")
+    parser.add_argument("--z-high", type=float, default=3.0,
+                        help="Upper bound for ambiguous z-score range")
+    parser.add_argument("--verification-history-window", type=int, default=5,
+                        help="Rounds of history for consistency checks")
+    parser.add_argument("--rescue-revocation-rounds", type=int, default=3,
+                        help="Consecutive anomalous rounds to revoke rescue")
+
     # Other
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=str, default="results/experiment.json")
@@ -1089,7 +1581,17 @@ def main():
         balance_alpha=args.balance_alpha,
         ubar_rho=args.ubar_rho,
         partition_alpha=args.partition_alpha,
-        seed=args.seed
+        seed=args.seed,
+        verification_enabled=args.verification,
+        verification_epsilon=args.verification_epsilon,
+        trust_decay=args.trust_decay,
+        trust_initial=args.trust_initial,
+        trust_penalty=args.trust_penalty,
+        trust_boost=args.trust_boost,
+        z_low=args.z_low,
+        z_high=args.z_high,
+        verification_history_window=args.verification_history_window,
+        rescue_revocation_rounds=args.rescue_revocation_rounds,
     )
     
     # Run simulation

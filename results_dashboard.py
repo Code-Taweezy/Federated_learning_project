@@ -61,6 +61,9 @@ ROUND_COL_TIPS = {
     'Slope':                 'Regression slope of accuracy over recent window',
     'R\u00b2':               'Coefficient of determination of accuracy regression',
     'Flags':                 'Number of nodes flagged as anomalous this round',
+    'V-Flag':                'Nodes flagged by verification Phase 1 (false negatives caught)',
+    'V-Rescue':              'Nodes rescued by verification Phase 2 (false positives corrected)',
+    'V-Time':                'Wall-clock time for verification layer (seconds)',
 }
 
 # Summary table heading descriptions
@@ -75,7 +78,10 @@ SUMMARY_COL_TIPS = {
     'FP':                    'False Positives \u2014 honest nodes incorrectly flagged',
     'TN':                    'True Negatives \u2014 honest nodes correctly not flagged',
     'FN':                    'False Negatives \u2014 compromised nodes missed',
+    'F1':                    'F1 score \u2014 harmonic mean of precision and recall',
     'T_detect':              'Detection time: first round a true positive was flagged',
+    'V-Flags':               'Total nodes flagged by verification Phase 1',
+    'V-Rescues':             'Total nodes rescued by verification Phase 2',
     'OH w/o Det':            'Avg overhead per round without detection (seconds)',
     'OH w/ Det':             'Avg overhead per round with detection (seconds)',
     'Duration':              'Total wall-clock time for the experiment',
@@ -454,7 +460,10 @@ class ResultsDashboard:
             'FP',
             'TN',
             'FN',
+            'F1',
             'T_detect',
+            'V-Flags',
+            'V-Rescues',
             'OH w/o Det',
             'OH w/ Det',
             'Duration',
@@ -466,7 +475,9 @@ class ResultsDashboard:
                         'Compr. Acc': 68,
                         'Atk Impact': 64,
                         'TP': 34, 'FP': 34, 'TN': 34, 'FN': 34,
+                        'F1': 50,
                         'T_detect': 56,
+                        'V-Flags': 50, 'V-Rescues': 56,
                         'OH w/o Det': 72, 'OH w/ Det': 72,
                         'Duration': 62},
             height=7)
@@ -887,6 +898,9 @@ class ResultsDashboard:
             self._fmt(row.get('slope')),
             self._fmt(row.get('r_squared')),
             row.get('n_flagged', '\u2013'),
+            row.get('n_ver_flagged', '\u2013'),
+            row.get('n_ver_rescued', '\u2013'),
+            self._fmt(row.get('ver_time')),
         ))
         self._round_tree.see(iid)
         self._autofit_columns(self._round_tree)
@@ -901,6 +915,7 @@ class ResultsDashboard:
             return
         det = res.get('detection', {}) or {}
         oh = res.get('overhead_avg', {}) or {}
+        ver = res.get('verification', {}) or {}
         self._sum_tree.item(iid, values=(
             name,
             'Failed' if res.get('error') else 'Done',
@@ -912,7 +927,10 @@ class ResultsDashboard:
             det.get('false_positives', '\u2013'),
             det.get('true_negatives', '\u2013'),
             det.get('false_negatives', '\u2013'),
+            self._fmt(det.get('f1_score')) if det.get('f1_score') is not None else '\u2013',
             det.get('detection_time', '\u2013') if det.get('detection_time') is not None else '\u2013',
+            ver.get('total_phase1_flags', '\u2013'),
+            ver.get('total_phase2_rescues', '\u2013'),
             self._fmt(oh.get('without_detection')) if oh.get('without_detection') is not None else '\u2013',
             self._fmt(oh.get('with_detection')) if oh.get('with_detection') is not None else '\u2013',
             res.get('duration', '-'),

@@ -27,6 +27,7 @@ METRICS_RE = re.compile(
     r'([\d.eE+-]+)\|([\d.eE+-]+)\|'               # slope | r_squared
     r'(\d+)\|(\d+)\|(\d+)\|(\d+)\|(\d+)\|'        # n_flagged | tp | fp | tn | fn
     r'([\d.eE+-]+)\|([\d.eE+-]+)'                 # time_without | time_with
+    r'(?:\|(\d+)\|(\d+)\|([\d.eE+-]+))?'           # optional: n_ver_flagged | n_ver_rescued | ver_time
 )
 
 
@@ -47,6 +48,9 @@ class Experiment:
         self.attack_type = kwargs.get('attack_type', 'directed')
         self.seed = kwargs.get('seed', 42)
         self.k = kwargs.get('k', 4)
+        # Verification layer
+        self.verification = kwargs.get('verification', True)
+        self.extra_args = kwargs.get('extra_args', [])  # list of additional CLI flags
     
     def to_command(self, output_file):
         """Generate command line arguments."""
@@ -63,6 +67,11 @@ class Experiment:
             '--k', str(self.k),
             '--output', output_file
         ]
+        if self.verification:
+            cmd.append('--verification')
+        else:
+            cmd.append('--no-verification')
+        cmd.extend(self.extra_args)
         return cmd
 
 
@@ -161,6 +170,23 @@ def _build_cross_dataset_suite(attack_ratio: float = 0.25,
                 rounds=50,
             ))
     return experiments
+
+
+# Suite 7: Verification Ablation — BALANCE and UBAR with and without verification
+VERIFICATION_SUITE = [
+    Experiment('balance_with_verification',
+               aggregation='balance', attack_ratio=0.25, rounds=50,
+               verification=True),
+    Experiment('balance_no_verification',
+               aggregation='balance', attack_ratio=0.25, rounds=50,
+               verification=False),
+    Experiment('ubar_with_verification',
+               aggregation='ubar', attack_ratio=0.25, rounds=50,
+               verification=True),
+    Experiment('ubar_no_verification',
+               aggregation='ubar', attack_ratio=0.25, rounds=50,
+               verification=False),
+]
 
 
 # ── Experiment Runner ──────────────────────────────────────────────
@@ -268,6 +294,9 @@ class ExperimentRunner:
                             "fn":                int(mm.group(12)),
                             "time_without_det":  float(mm.group(13)),
                             "time_with_det":     float(mm.group(14)),
+                            "n_ver_flagged":     int(mm.group(15)) if mm.group(15) else 0,
+                            "n_ver_rescued":     int(mm.group(16)) if mm.group(16) else 0,
+                            "ver_time":          float(mm.group(17)) if mm.group(17) else 0.0,
                         }
                         # If the round row was already sent, send a metrics-only update
                         dashboard.notify_metrics(exp.name, rnd, _pending_metrics[rnd])
@@ -399,6 +428,9 @@ def print_menu():
     print("     - FedAvg / BALANCE / UBAR across femnist and shakespeare")
     print("     - Configurable attack ratio + attack type (dialog shown before launch)\n")
     print("  6. CUSTOM (define your own)\n")
+    print("  7. VERIFICATION ABLATION")
+    print("     - 4 experiments (32 nodes, 50 rounds)")
+    print("     - BALANCE and UBAR with and without verification layer\n")
     print("  0. Exit\n")
 
 
@@ -648,7 +680,7 @@ def main():
     """Main execution."""
     while True:
         print_menu()
-        choice = input("Select suite (0-6): ").strip()
+        choice = input("Select suite (0-7): ").strip()
 
         if choice == '0':
             print("\nGoodbye!\n")
@@ -674,6 +706,8 @@ def main():
             custom_exps = run_custom_suite()
             if custom_exps:
                 _run_suite('custom', custom_exps)
+        elif choice == '7':
+            _run_suite('verification_ablation', VERIFICATION_SUITE)
         else:
             print("Invalid choice.")
 
