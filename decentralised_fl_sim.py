@@ -497,6 +497,7 @@ class DecentralisedSimulator:
         self._verification_time_per_round = []  # per-round verification time
         self._round_accepted = []  # per-node accepted sets (set each round)
         self._round_rejected = []  # per-node rejected sets (set each round)
+        self._round_neighbor_models = {}  # (node_idx, neighbor_idx) -> raw state_dict sent this round
     
     def _set_seed(self):
         """Set random seeds."""
@@ -717,6 +718,8 @@ class DecentralisedSimulator:
             
             # --- Aggregation (timed without detection) ---
             t_agg_start = time.time()
+            # Bug 2 fix: capture pre-aggregation states before nodes are updated
+            pre_agg_states = [node.get_model_state() for node in self.nodes]
             self._aggregation_round(round_num)
             t_agg_end = time.time()
             time_without_detection = t_agg_end - t_agg_start
@@ -755,7 +758,7 @@ class DecentralisedSimulator:
             self._verification_flags = []  # reset per-round
             t_ver_start = time.time()
             verification_changed = self._run_verification(
-                round_num, current_states, drifts, peer_devs, z_scores
+                round_num, current_states, drifts, peer_devs, z_scores, pre_agg_states
             )
             t_ver_end = time.time()
             verification_time = t_ver_end - t_ver_start
@@ -816,6 +819,7 @@ class DecentralisedSimulator:
         new_states = []
         self._round_accepted = []
         self._round_rejected = []
+        self._round_neighbor_models = {}  # reset each round
         
         for node_idx, node in enumerate(self.nodes):
             neighbors_idx = self.graph.get_neighbors(node_idx)
@@ -832,9 +836,12 @@ class DecentralisedSimulator:
                     malicious_state = self.attacker.craft_malicious_update(
                         honest_states, neighbor_idx
                     )
-                    neighbor_states.append(malicious_state if malicious_state else all_states[neighbor_idx])
+                    raw_state = malicious_state if malicious_state else all_states[neighbor_idx]
                 else:
-                    neighbor_states.append(all_states[neighbor_idx])
+                    raw_state = all_states[neighbor_idx]
+                # Bug 5 fix: store the raw model that was actually sent to this node
+                self._round_neighbor_models[(node_idx, neighbor_idx)] = raw_state
+                neighbor_states.append(raw_state)
             
             # Aggregate — now returns accepted/rejected indices
             new_state, accepted, rejected = node.aggregator.aggregate(
@@ -852,6 +859,14 @@ class DecentralisedSimulator:
     #  Verification Layer
     # ------------------------------------------------------------------
 
+    # Minimum network accuracy required before Phase 2 performance-based rescue
+    # is considered meaningful (near-zero accuracy makes Signal 4 trivially true).
+    _PHASE2_MIN_ACCURACY = 0.05
+
+    # Minimum number of rescues a node must accumulate before being permanently
+    # promoted (prevents single-rescue promotions in the first 1–2 rounds).
+    _MIN_RESCUES_FOR_PROMOTION = 3
+
     def _evaluate_model(self, node_idx, model_state):
         """
         Evaluate a model state dict on node's LOCAL TEST SET.
@@ -865,16 +880,19 @@ class DecentralisedSimulator:
         node.set_model_state(original_state)     # restore
         return acc
 
-    def _re_aggregate(self, node_idx, accepted_models):
+    def _re_aggregate(self, node_idx, accepted_models, pre_agg_state=None):
         """
         Re-aggregate using the same blending formula as the aggregation algorithm.
         θ_new = α · θ_own + (1 - α) · mean(accepted_models)
+        pre_agg_state: the node's locally-trained state before this round's aggregation.
+                       When provided, it is used as θ_own to avoid double-counting aggregation.
         """
         if not accepted_models:
             return self.nodes[node_idx].get_model_state()
 
         alpha = self.config.balance_alpha
-        own_model = self.nodes[node_idx].get_model_state()
+        # Bug 2 fix: use the pre-aggregation state as own_model when available
+        own_model = pre_agg_state if pre_agg_state is not None else self.nodes[node_idx].get_model_state()
 
         # Average accepted models
         avg = {}
@@ -889,8 +907,18 @@ class DecentralisedSimulator:
 
         return result
 
+    def _get_neighbor_model(self, node_idx, neighbor_idx, fallback_states):
+        """
+        Bug 5 fix: return the raw model that neighbour_idx sent to node_idx this round.
+        Falls back to fallback_states[neighbor_idx] if no raw model was recorded.
+        """
+        key = (node_idx, neighbor_idx)
+        if key in self._round_neighbor_models:
+            return self._round_neighbor_models[key]
+        return fallback_states[neighbor_idx]
+
     def _verification_phase1(self, node_idx, S, R, theta_agg, acc_agg,
-                              z_scores, all_states, round_num):
+                              z_scores, original_states, round_num, pre_agg_state=None):
         """
         Phase 1: Scan accepted set for malicious nodes that passed filtering.
         Modifies S and R in-place. Returns: bool — whether any nodes were moved.
@@ -917,8 +945,8 @@ class DecentralisedSimulator:
             if not S_without_j:
                 continue  # can't remove the only accepted node
 
-            models_without_j = [all_states[k] for k in S_without_j]
-            theta_without_j = self._re_aggregate(node_idx, models_without_j)
+            models_without_j = [self._get_neighbor_model(node_idx, k, original_states) for k in S_without_j]
+            theta_without_j = self._re_aggregate(node_idx, models_without_j, pre_agg_state)
             acc_without_j = self._evaluate_model(node_idx, theta_without_j)
 
             delta_perf = acc_without_j - acc_agg
@@ -987,7 +1015,7 @@ class DecentralisedSimulator:
         return changed
 
     def _verification_phase2(self, node_idx, S, R, theta_agg, acc_agg,
-                              z_scores, drifts, peer_devs, all_states, round_num):
+                              z_scores, drifts, peer_devs, original_states, round_num, pre_agg_state=None):
         """
         Phase 2: Rescue honest nodes wrongly excluded by aggregation filter.
         Modifies S and R in-place. Returns: bool — whether any nodes were rescued.
@@ -1005,6 +1033,12 @@ class DecentralisedSimulator:
         if not candidates:
             return False
 
+        # Bug 1 fix: skip Phase 2 entirely when model accuracy is too low for
+        # performance-based rescue to be meaningful (near-zero accuracy makes
+        # Signal 4 trivially true for almost any model)
+        if acc_agg < self._PHASE2_MIN_ACCURACY:
+            return False
+
         # Compute median peer deviation for signal 2
         sorted_pdevs = sorted(peer_devs)
         median_peer_dev = float(sorted_pdevs[len(sorted_pdevs) // 2])
@@ -1019,8 +1053,9 @@ class DecentralisedSimulator:
         for k in candidates:
             signals = 0
 
-            # Signal 1: Trust score — historically honest
-            sig_trust_ok = self._trust_scores[k] >= 0.5
+            # Signal 1: Trust score — must be above initialisation value so nodes
+            # can't auto-pass at the start (Bug 1 fix: threshold raised from 0.5 to 0.6)
+            sig_trust_ok = self._trust_scores[k] >= 0.6
             if sig_trust_ok:
                 signals += 1
 
@@ -1035,9 +1070,10 @@ class DecentralisedSimulator:
                 signals += 1
 
             # Signal 4: Performance — inclusion doesn't hurt
+            # Bug 5 fix: use raw neighbour model, Bug 2 fix: pass pre_agg_state
             S_with_k = S + [k]
-            models_with_k = [all_states[j] for j in S_with_k]
-            theta_with_k = self._re_aggregate(node_idx, models_with_k)
+            models_with_k = [self._get_neighbor_model(node_idx, j, original_states) for j in S_with_k]
+            theta_with_k = self._re_aggregate(node_idx, models_with_k, pre_agg_state)
             acc_with_k = self._evaluate_model(node_idx, theta_with_k)
             sig_perf_ok = acc_with_k >= acc_agg - eps
             if sig_perf_ok:
@@ -1095,7 +1131,10 @@ class DecentralisedSimulator:
 
         # Automatic rescue promotion
         for i in range(self.config.num_nodes):
-            promotion_threshold = -(-round_num // 2)  # equivalent to math.ceil(round_num / 2)
+            # Bug 4 fix: require at least _MIN_RESCUES_FOR_PROMOTION rescues before
+            # promotion to prevent single-rescue promotions in early rounds (round 1-2
+            # gave threshold=1)
+            promotion_threshold = max(self._MIN_RESCUES_FOR_PROMOTION, -(-round_num // 2))  # max(min, ceil(round_num/2))
             if self._rescue_counts[i] >= promotion_threshold and not self._permanently_rescued[i]:
                 self._permanently_rescued[i] = True
 
@@ -1112,9 +1151,10 @@ class DecentralisedSimulator:
                     self._rescue_counts[i] = 0
                     self._consecutive_anomalous[i] = 0
 
-    def _run_verification(self, round_num, all_states, drifts, peer_devs, z_scores):
+    def _run_verification(self, round_num, all_states, drifts, peer_devs, z_scores, pre_agg_states):
         """
         Called once per round, after aggregation and first-pass detection.
+        pre_agg_states: per-node model states captured before _aggregation_round().
         Returns: corrected: bool — whether any changes were made.
         """
         if not self.config.verification_enabled:
@@ -1134,6 +1174,12 @@ class DecentralisedSimulator:
 
         any_changed = False
 
+        # Bug 3 fix: snapshot original states so per-node updates don't cascade
+        # into subsequent nodes' verification decisions.
+        original_states = list(all_states)
+        # Collect all model updates; apply them after the full loop.
+        pending_updates = {}
+
         for node_idx in range(self.config.num_nodes):
             S = list(self._round_accepted[node_idx])  # copy — will be modified
             R = list(self._round_rejected[node_idx])   # copy
@@ -1147,15 +1193,16 @@ class DecentralisedSimulator:
             if not R and not S:
                 continue  # nothing to verify
 
-            theta_agg = all_states[node_idx]  # initial aggregated model for this node
+            theta_agg = original_states[node_idx]  # initial aggregated model for this node
             acc_agg = self._evaluate_model(node_idx, theta_agg)
 
+            pre_agg_state = pre_agg_states[node_idx] if pre_agg_states else None
             changed = False
 
             # ── PHASE 1 ──
             changed_p1 = self._verification_phase1(
                 node_idx, S, R, theta_agg, acc_agg,
-                z_scores, all_states, round_num
+                z_scores, original_states, round_num, pre_agg_state
             )
             if changed_p1:
                 changed = True
@@ -1163,23 +1210,30 @@ class DecentralisedSimulator:
             # ── PHASE 2 ──
             changed_p2 = self._verification_phase2(
                 node_idx, S, R, theta_agg, acc_agg,
-                z_scores, drifts, peer_devs, all_states, round_num
+                z_scores, drifts, peer_devs, original_states, round_num, pre_agg_state
             )
             if changed_p2:
                 changed = True
 
             # ── PHASE 3: Re-aggregate if anything changed ──
             if changed:
-                accepted_models = [all_states[j] for j in S]
+                # Bug 5 fix: use raw neighbour models; Bug 2 fix: pass pre_agg_state
+                accepted_models = [self._get_neighbor_model(node_idx, j, original_states) for j in S]
                 if accepted_models:
-                    theta_final = self._re_aggregate(node_idx, accepted_models)
-                    self.nodes[node_idx].set_model_state(theta_final)
-                    all_states[node_idx] = theta_final
+                    theta_final = self._re_aggregate(node_idx, accepted_models, pre_agg_state)
+                    # Bug 3 fix: defer node state update until after the full loop
+                    pending_updates[node_idx] = theta_final
                 any_changed = True
 
             # Update accepted/rejected records
             self._round_accepted[node_idx] = S
             self._round_rejected[node_idx] = R
+
+        # Bug 3 fix: apply all deferred model updates now that every node has
+        # been evaluated against the consistent original_states snapshot.
+        for idx, state in pending_updates.items():
+            self.nodes[idx].set_model_state(state)
+            all_states[idx] = state
 
         # ── PHASE 4: Trust updates and promotion ──
         self._verification_phase4(round_num, z_scores)
