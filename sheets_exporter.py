@@ -40,7 +40,10 @@ METRICS_HEADER = [
     "Regression Slope", "R²",
     "Detection Flags",
     "TP (cumul)", "FP (cumul)", "TN (cumul)", "FN (cumul)",
+    "Precision", "Recall", "F1",
     "T_detect", "Time w/o Detection (s)", "Time w/ Detection (s)",
+    "V-Flagged", "V-Rescued", "V-Time (s)",
+    "Perm. Rescued",
 ]
 
 # Maps internal dataset names -> display names matching your spreadsheet tabs
@@ -270,11 +273,23 @@ def _export_metrics_tab(spread, data: dict,
     detection = summary.get("detection", {}) or {}
     t_detect = detection.get("detection_time", "")
 
+    precision = detection.get("precision", "")
+    recall    = detection.get("recall", "")
+    f1        = detection.get("f1_score", "")
+    verification = summary.get("verification", {}) or {}
+
     metrics_rows = []
     for rr in round_results:
         rnd = rr.get("round", "")
         flags_list = rr.get("detection_flags", [])
         n_flagged = sum(1 for f in flags_list if f.get("flagged")) if isinstance(flags_list, list) else ""
+
+        # Per-round verification data
+        v_flagged  = rr.get("nodes_flagged_phase1", "")
+        v_rescued  = rr.get("nodes_rescued_phase2", "")
+        v_time     = rr.get("verification_time", "")
+        perm_resc  = ", ".join(str(n) for n in rr.get("permanently_rescued", [])) if rr.get("permanently_rescued") else ""
+
         metrics_rows.append([
             timestamp,
             run_id,
@@ -296,9 +311,16 @@ def _export_metrics_tab(spread, data: dict,
             detection.get("false_positives", ""),
             detection.get("true_negatives", ""),
             detection.get("false_negatives", ""),
+            precision,
+            recall,
+            f1,
             t_detect,
             rr.get("time_without_detection", data.get("summary", {}).get("overhead_avg", {}).get("without_detection", "")),
             rr.get("time_with_detection", data.get("summary", {}).get("overhead_avg", {}).get("with_detection", "")),
+            v_flagged,
+            v_rescued,
+            v_time,
+            perm_resc,
         ])
 
     if not metrics_rows:

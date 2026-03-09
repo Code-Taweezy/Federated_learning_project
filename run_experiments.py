@@ -172,21 +172,28 @@ def _build_cross_dataset_suite(attack_ratio: float = 0.25,
     return experiments
 
 
-# Suite 7: Verification Ablation — BALANCE and UBAR with and without verification
-VERIFICATION_SUITE = [
-    Experiment('balance_with_verification',
-               aggregation='balance', attack_ratio=0.25, rounds=50,
-               verification=True),
-    Experiment('balance_no_verification',
-               aggregation='balance', attack_ratio=0.25, rounds=50,
-               verification=False),
-    Experiment('ubar_with_verification',
-               aggregation='ubar', attack_ratio=0.25, rounds=50,
-               verification=True),
-    Experiment('ubar_no_verification',
-               aggregation='ubar', attack_ratio=0.25, rounds=50,
-               verification=False),
-]
+# Suite 7: Verification Ablation — built dynamically (see _build_verification_suite)
+def _build_verification_suite(attack_ratio: float = 0.25,
+                              attack_type: str = 'directed',
+                              topology: str = 'ring') -> List[Experiment]:
+    """BALANCE and UBAR with/without verification across all datasets."""
+    datasets = ['femnist', 'shakespeare']
+    experiments = []
+    for ds in datasets:
+        for agg in ['balance', 'ubar']:
+            for ver_flag, tag in [(True, 'with_verification'),
+                                  (False, 'no_verification')]:
+                experiments.append(Experiment(
+                    f'{ds}_{agg}_{tag}',
+                    dataset=ds,
+                    aggregation=agg,
+                    attack_ratio=attack_ratio,
+                    attack_type=attack_type,
+                    topology=topology,
+                    rounds=50,
+                    verification=ver_flag,
+                ))
+    return experiments
 
 
 # ── Experiment Runner ──────────────────────────────────────────────
@@ -471,10 +478,11 @@ def run_custom_suite():
     return experiments
 
 
-def _configure_cross_dataset() -> dict:
+def _configure_suite(suite_label: str = 'Cross-Dataset') -> dict:
     """
-    Show a styled tkinter config dialog for the cross-dataset suite.
-    Returns {'attack_ratio': float, 'attack_type': str} or None if cancelled.
+    Show a styled tkinter config dialog for a suite.
+    Returns {'attack_ratio': float, 'attack_type': str, 'topology': str}
+    or None if cancelled.
     """
     try:
         import tkinter as tk
@@ -515,7 +523,7 @@ def _configure_cross_dataset() -> dict:
         pass
 
     root = tk.Tk()
-    root.title("Configure Cross-Dataset Suite")
+    root.title(f"Configure {suite_label} Suite")
     root.geometry("500x520")
     root.resizable(False, False)
     root.configure(bg=BG)
@@ -526,7 +534,7 @@ def _configure_cross_dataset() -> dict:
     tk.Label(hdr, text='Federated Learning Dashboard',
              font=(FONT_UI, 13, 'bold'), bg=HDR_BG, fg=HDR_FG
              ).pack(side='left', padx=20, pady=(12, 0), anchor='sw')
-    tk.Label(hdr, text='Cross-Dataset Configuration',
+    tk.Label(hdr, text=f'{suite_label} Configuration',
              font=(FONT_UI, 9), bg=HDR_BG, fg=DIM
              ).pack(side='left', padx=(6, 0), pady=(28, 8), anchor='sw')
     # thin accent line
@@ -694,7 +702,7 @@ def main():
         elif choice == '4':
             _run_suite('shakespeare_comparison', SHAKESPEARE_SUITE)
         elif choice == '5':
-            cfg = _configure_cross_dataset()
+            cfg = _configure_suite('Cross-Dataset')
             if cfg:
                 exps = _build_cross_dataset_suite(
                     attack_ratio=cfg['attack_ratio'],
@@ -707,7 +715,14 @@ def main():
             if custom_exps:
                 _run_suite('custom', custom_exps)
         elif choice == '7':
-            _run_suite('verification_ablation', VERIFICATION_SUITE)
+            cfg = _configure_suite('Verification Ablation')
+            if cfg:
+                exps = _build_verification_suite(
+                    attack_ratio=cfg['attack_ratio'],
+                    attack_type=cfg['attack_type'],
+                    topology=cfg.get('topology', 'ring'),
+                )
+                _run_suite('verification_ablation', exps)
         else:
             print("Invalid choice.")
 
