@@ -64,10 +64,10 @@ class SimulationConfig:
         if self.aggregation not in ("fedavg", "balance", "ubar"):
             raise ValueError(f"Unknown aggregation: {self.aggregation}")
 
-# ── Graph Topology ──────────────────────────────────────────────
+# Topologies and Network Graph
 
 class NetworkGraph:
-    """Network topology for decentralised learning"""
+    #Network topology for decentralised learning
 
     def __init__(self, num_nodes: int, topology: str, k: int = 4) :
         self.num_nodes = num_nodes
@@ -116,7 +116,7 @@ class NetworkGraph:
                 edges.add(edge)
         return list(edges)
     
-# ── Byzantine Attacks ───────────────────────────────────────────
+#Byzantine Attacks
 
 def _average_state_dicts(models: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
     """Average a list of model state dicts parameter-wise."""
@@ -173,7 +173,7 @@ class ByzantineAttacker:
         else:
             raise ValueError(f"Unknown attack type: {self.config.attack_type}")
     
-# ── Aggregation Algorithms ──────────────────────────────────────
+#Aggregation Algorithms 
 
 class FedAvgAggregator : 
     """Standard Federated Averaging — accepts all neighbours equally."""
@@ -364,7 +364,7 @@ class UBARAggregator:
         
         return loss.item()
         
-# ── Federated Node ──────────────────────────────────────────────
+#Federated Nodes
 
 class FederatedNode: 
     """A single node in the federated network"""
@@ -1603,7 +1603,7 @@ def main():
     
     args = parser.parse_args()
 
-    # Interactive mode when run directly without --dataset
+    # Interactive mode when run directly without
     _interactive = {}
     if args.dataset is None:
         _interactive = _interactive_config()

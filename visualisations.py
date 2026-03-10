@@ -20,7 +20,7 @@ plt.rcParams['savefig.dpi'] = 300
 plt.rcParams['font.size'] = 10
 
 
-# ── Visualisation Functions ──────────────────────────────────────
+#Visualisation Functions 
 
 
 def plot_accuracy_evolution(results_file: str, output_path: str):
@@ -69,7 +69,7 @@ def plot_accuracy_evolution(results_file: str, output_path: str):
 
 
 def plot_network_topology(results_file: str, output_path: str):
-    """Visualize network topology with compromised nodes."""
+    #Visualize network topology with compromised nodes.
     with open(results_file, 'r') as f:
         data = json.load(f)
     
@@ -127,7 +127,7 @@ def plot_network_topology(results_file: str, output_path: str):
 
 
 def plot_convergence_comparison(results_files: Dict[str, str], output_path: str):
-    """Compare convergence of different algorithms."""
+    #Compare convergence of different algorithms.
     fig, ax = plt.subplots(figsize=(12, 6))
     
     colors = ['#3498db', '#2ecc71', '#e74c3c', '#f39c12', '#9b59b6']
@@ -157,8 +157,7 @@ def plot_convergence_comparison(results_files: Dict[str, str], output_path: str)
     print(f"Saved: {output_path}")
 
 
-# ── Verification Visualisations ──────────────────────────────────
-
+#Verification Visualisations 
 
 def plot_trust_evolution(results_file: str, output_path: str):
     """Plot per-node trust score evolution across rounds."""
@@ -237,7 +236,7 @@ def plot_rescue_counts(results_file: str, output_path: str):
     print(f"Saved: {output_path}")
 
 
-# ── Analysis Functions ───────────────────────────────────────────
+#Analysis Functions 
 
 
 def analyze_robustness(results_file: str) -> Dict:
@@ -431,8 +430,7 @@ def plot_robustness_comparison(results_files: Dict[str, str], output_path: str):
     print(f"Saved: {output_path}")
 
 
-# ── Complete Analysis and Comparison Functions ───────────────────
-
+#Complete Analysis and Comparison Functions 
 
 def analyze_experiment(results_file: str, output_dir: str):
     """Run complete analysis on a single experiment."""

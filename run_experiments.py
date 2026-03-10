@@ -31,8 +31,7 @@ METRICS_RE = re.compile(
 )
 
 
-# ── Experiment Configurations ──────────────────────────────────────
-
+#Experiment Configurations 
 
 class Experiment:
     """Simple experiment configuration."""
@@ -75,7 +74,7 @@ class Experiment:
         return cmd
 
 
-# ── Experiment Suites ──────────────────────────────────────────────
+# Experiment Suites 
 
 
 # Suite 1: Baseline (Quick Test)
@@ -172,11 +171,11 @@ def _build_cross_dataset_suite(attack_ratio: float = 0.25,
     return experiments
 
 
-# Suite 7: Verification Ablation — built dynamically (see _build_verification_suite)
+# Suite 7: Verification Layer comparison(refer to _build_verification_suite)
 def _build_verification_suite(attack_ratio: float = 0.25,
                               attack_type: str = 'directed',
                               topology: str = 'ring') -> List[Experiment]:
-    """BALANCE and UBAR with/without verification across all datasets."""
+    # Runs datasets using BALANCE and UBAR with/without verification layer ( 8 experiments)
     datasets = ['femnist', 'shakespeare']
     experiments = []
     for ds in datasets:
@@ -196,7 +195,7 @@ def _build_verification_suite(attack_ratio: float = 0.25,
     return experiments
 
 
-# ── Experiment Runner ──────────────────────────────────────────────
+# Experiment Runner 
 
 
 class ExperimentRunner:
