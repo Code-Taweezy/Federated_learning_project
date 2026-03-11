@@ -1,17 +1,17 @@
-# --- Python / virtualenv ---
+#- Python / virtualenv-
 venv/
 .venv/
 __pycache__/
 *.pyc
 
-# --- Local results/output ---
+#- Local results/output-
 results/
 *.log
 
-# --- LEAF dataset (usually huge) ---
+#- LEAF dataset (usually huge)-
 leaf/data/**
 
-# --- Secrets (Google service account key) ---
+#- Secrets (Google service account key)-
 service_account.json
 *service_account*.json
 # Google Sheets local config
@@ -19,7 +19,7 @@ sheets_config.json
 service_account.json
 .secrets/
 
-# --- OS / editor ---
+#- OS / editor-
 .DS_Store
 .vscode/
 

@@ -19,15 +19,15 @@ ROUND_RE = re.compile(
     r'(?:\s*\|\s*([\d.]+)\s*\|\s*([\d.]+))?'
 )
 
-# Matches a METRICS|... structured line emitted after each round
+#Matches a METRICS line after each round, containing detection and timing metrics:
 METRICS_RE = re.compile(
     r'^METRICS\|(\d+)\|'                          # round
-    r'([\d.eE+-]+)\|([\d.eE+-]+)\|'               # drift_mean | drift_std
-    r'([\d.eE+-]+)\|([\d.eE+-]+)\|'               # peer_dev_mean | consensus
-    r'([\d.eE+-]+)\|([\d.eE+-]+)\|'               # slope | r_squared
-    r'(\d+)\|(\d+)\|(\d+)\|(\d+)\|(\d+)\|'        # n_flagged | tp | fp | tn | fn
+    r'([\d.eE+-]+)\|([\d.eE+-]+)\|'               # drift_mean | drift_std (drift standard deviation)
+    r'([\d.eE+-]+)\|([\d.eE+-]+)\|'               # peer_dev_mean | consensus score 
+    r'([\d.eE+-]+)\|([\d.eE+-]+)\|'               # slope | r_squared 
+    r'(\d+)\|(\d+)\|(\d+)\|(\d+)\|(\d+)\|'        # n_flagged | tp (true positives) | fp (false positives) | tn (true negatives) | fn (false negatives)
     r'([\d.eE+-]+)\|([\d.eE+-]+)'                 # time_without | time_with
-    r'(?:\|(\d+)\|(\d+)\|([\d.eE+-]+))?'           # optional: n_ver_flagged | n_ver_rescued | ver_time
+    r'(?:\|(\d+)\|(\d+)\|([\d.eE+-]+))?'          # n_ver_flagged | n_ver_rescued | ver_time
 )
 
 
@@ -47,9 +47,10 @@ class Experiment:
         self.attack_type = kwargs.get('attack_type', 'directed')
         self.seed = kwargs.get('seed', 42)
         self.k = kwargs.get('k', 4)
+
         # Verification layer
         self.verification = kwargs.get('verification', True)
-        self.extra_args = kwargs.get('extra_args', [])  # list of additional CLI flags
+        self.extra_args = kwargs.get('extra_args', [])  # list of additional CLI (Command Line Interface) flags
     
     def to_command(self, output_file):
         """Generate command line arguments."""
@@ -69,7 +70,7 @@ class Experiment:
         if self.verification:
             cmd.append('--verification')
         else:
-            cmd.append('--no-verification')
+            cmd.append('no-verification')
         cmd.extend(self.extra_args)
         return cmd
 
@@ -422,7 +423,7 @@ def print_menu():
     print("     - FedAvg no-attack vs directed-attack baseline\n")
     print("  2. ALGORITHM COMPARISON")
     print("     - 3 experiments (32 nodes, 50 rounds)")
-    print("     - FedAvg vs BALANCE vs UBAR  (femnist)\n")
+    print("     - FedAvg vs BALANCE vs UBAR  (FEMNIST)\n")
     print("  3. TOPOLOGY COMPARISON")
     print("     - 3 experiments (32 nodes, 50 rounds)")
     print("     - Ring vs k-regular vs fully-connected\n")
@@ -431,17 +432,17 @@ def print_menu():
     print("     - Algorithm comparison on Shakespeare (character-level LSTM)\n")
     print("  5. CROSS-DATASET COMPARISON")
     print("     - 6 experiments (32 nodes, 50 rounds)")
-    print("     - FedAvg / BALANCE / UBAR across femnist and shakespeare")
+    print("     - FedAvg / BALANCE / UBAR across FEMNIST and Shakespeare")
     print("     - Configurable attack ratio + attack type (dialog shown before launch)\n")
-    print("  6. CUSTOM (define your own)\n")
-    print("  7. VERIFICATION ABLATION")
-    print("     - 4 experiments (32 nodes, 50 rounds)")
-    print("     - BALANCE and UBAR with and without verification layer\n")
+    print("  6. VERIFICATION ABLATION")
+    print("     - runs 8 experiments (32 nodes, 50 rounds)")
+    print("     - BALANCE and UBAR with and without verification layer across FEMNIST and Shakespeare\n")
+    print("  7. CUSTOM (define your own)\n")
     print("  0. Exit\n")
 
-
+# Option 7 allows for custom experiment configuration (terminal prompts)
 def run_custom_suite():
-    """Run custom experiments."""
+    #Run custom experiments.
     print("\n Custom Experiment Configuration")
     
     experiments = []
@@ -527,7 +528,7 @@ def _configure_suite(suite_label: str = 'Cross-Dataset') -> dict:
     root.resizable(False, False)
     root.configure(bg=BG)
 
-    # ── header bar (matches dashboard header) ─────────────────────────────────
+    # header 
     hdr = tk.Frame(root, bg=HDR_BG, height=62)
     hdr.pack(fill='x'); hdr.pack_propagate(False)
     tk.Label(hdr, text='Federated Learning Dashboard',
@@ -549,7 +550,7 @@ def _configure_suite(suite_label: str = 'Cross-Dataset') -> dict:
                  ).pack(anchor='w', pady=(14, 4))
         tk.Frame(body, bg=BORDER, height=1).pack(fill='x', pady=(0, 10))
 
-    # ── attack ratio slider ───────────────────────────────────────────────────
+    # Code for the attack ratio slider
     _section_label('Attack Ratio')
 
     slider_row = tk.Frame(body, bg=BG)
@@ -576,7 +577,7 @@ def _configure_suite(suite_label: str = 'Cross-Dataset') -> dict:
              font=(FONT_UI, 8), bg=BG, fg=MUTED
              ).pack(anchor='w', pady=(0, 2))
 
-    # ── attack type toggle ────────────────────────────────────────────────────
+    #attack type toggle (allows the user  to configure the attack to Directed or Gaussian)
     _section_label('Attack Type')
 
     type_var = tk.StringVar(value='directed')
@@ -600,7 +601,7 @@ def _configure_suite(suite_label: str = 'Cross-Dataset') -> dict:
              font=(FONT_UI, 9), bg=BG, fg=MUTED, justify='left'
              ).pack(anchor='w', pady=(8, 2))
 
-    # ── topology selector ─────────────────────────────────────────────────────
+    # topology selector (Choose between ring, k-regular (fixed at 4), and full)
     _section_label('Topology')
 
     topo_var = tk.StringVar(value='ring')
@@ -624,7 +625,7 @@ def _configure_suite(suite_label: str = 'Cross-Dataset') -> dict:
              font=(FONT_UI, 9), bg=BG, fg=MUTED
              ).pack(anchor='w', pady=(8, 0))
 
-    # ── buttons (matches dashboard footer style) ───────────────────────────────
+    # buttons (matches dashboard footer style) 
     tk.Frame(root, bg=BORDER, height=1).pack(fill='x')
     btn_row = tk.Frame(root, bg=SURFACE, height=54)
     btn_row.pack(fill='x', side='bottom'); btn_row.pack_propagate(False)
@@ -710,10 +711,6 @@ def main():
                 )
                 _run_suite('cross_dataset', exps)
         elif choice == '6':
-            custom_exps = run_custom_suite()
-            if custom_exps:
-                _run_suite('custom', custom_exps)
-        elif choice == '7':
             cfg = _configure_suite('Verification Ablation')
             if cfg:
                 exps = _build_verification_suite(
@@ -722,6 +719,12 @@ def main():
                     topology=cfg.get('topology', 'ring'),
                 )
                 _run_suite('verification_ablation', exps)
+                
+        elif choice == '7':
+            custom_exps = run_custom_suite()
+            if custom_exps:
+                _run_suite('custom', custom_exps)
+        
         else:
             print("Invalid choice.")
 

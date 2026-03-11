@@ -23,38 +23,37 @@ class SimulationConfig:
     learning_rate: float = 0.01 
     seed: int = 42 
 
-    #Graph topology 
-    topology: str = "ring" # ring, fully, k-regular 
-    k_neighbors: int = 4 # for k-regular
+    # Graph topology configuration
+    topology: str = "ring"  # Options: ring, fully, k-regular
+    k_neighbors: int = 4     # Number of neighbors for k-regular topology
 
-    #Aggregation 
-    aggregation: str = "fedavg" # fedavg, balance, ubar
+    # Aggregation algorithm configuration
+    aggregation: str = "fedavg"  # Options: fedavg, balance, ubar
 
-    #Attack configuration
-    attack_type: str = "directed" # valid: directed, gaussian
-    attack_ratio: float = 0.0 # 0.0 to 0.5 (proportion of compromised nodes)
-    attack_strength: float = 1.0 # for directed and gaussian
+    # Attack configuration
+    attack_type: str = "directed"  # Options: directed, gaussian
+    attack_ratio: float = 0.0      # Proportion of compromised nodes (0.0 to 0.5)
+    attack_strength: float = 1.0   # Attack strength for directed and gaussian attacks
 
-    #Algorithm parameters
+    # Algorithm-specific parameters
+    balance_alpha: float = 0.5     # Alpha for balance aggregation
+    balance_gamma: float = 2.0     # Gamma for balance aggregation
+    balance_kappa: float = 1.0     # Kappa for balance aggregation
+    ubar_rho: float = 0.4          # Rho for UBAR aggregation
 
-    balance_alpha: float = 0.5 # for balance aggregation
-    balance_gamma: float = 2.0 # for balance aggregation
-    balance_kappa: float = 1.0 # for balance aggregation
-    ubar_rho: float = 0.4 # for ubar
-
-    partition_alpha: float = 0.5  # Dirichlet alpha for non-IID partitioning (lower = more heterogeneous)
+    partition_alpha: float = 0.5   # Dirichlet alpha for non-IID partitioning (lower = more heterogeneous)
 
     # Verification layer parameters
-    verification_enabled: bool = True          # Master switch
+    verification_enabled: bool = True          # Enable/disable verification layer
     verification_epsilon: float = 0.01         # Performance threshold (accuracy delta)
-    trust_decay: float = 0.9                   # β — exponential decay for trust score
-    trust_initial: float = 0.5                 # T_i^0 — starting trust for all nodes
-    trust_penalty: float = 0.3                 # δ_penalty — trust reduction on confirmed flag
-    trust_boost: float = 0.1                   # δ_boost — trust increase on rescue
+    trust_decay: float = 0.9                   # Exponential decay for trust score (beta)
+    trust_initial: float = 0.5                 # Initial trust score for all nodes
+    trust_penalty: float = 0.3                 # Trust reduction on confirmed flag (penalty)
+    trust_boost: float = 0.1                   # Trust increase on rescue (boost)
     z_low: float = 1.0                         # Lower bound for ambiguous z-score range
     z_high: float = 3.0                        # Upper bound for ambiguous z-score range
-    verification_history_window: int = 5       # w — rounds of history for consistency checks
-    rescue_revocation_rounds: int = 3          # r_revoke — consecutive anomalous rounds to revoke
+    verification_history_window: int = 5       # Rounds of history for consistency checks
+    rescue_revocation_rounds: int = 3          # Consecutive anomalous rounds to revoke rescue
 
     def __post_init__(self):
         if not (0.0 <= self.attack_ratio <= 0.5):
@@ -67,7 +66,7 @@ class SimulationConfig:
 # Topologies and Network Graph
 
 class NetworkGraph:
-    #Network topology for decentralised learning
+    # Handles network topology for decentralised learning
 
     def __init__(self, num_nodes: int, topology: str, k: int = 4) :
         self.num_nodes = num_nodes
@@ -129,7 +128,7 @@ def _average_state_dicts(models: List[Dict[str, torch.Tensor]]) -> Dict[str, tor
     return avg
 
 class ByzantineAttacker:
-    #implements Byzantine attacks on FL 
+    # Implements Byzantine attacks for federated learning (directed and gaussian)
 
     def __init__(self, config: SimulationConfig):
         self.config = config
@@ -176,7 +175,7 @@ class ByzantineAttacker:
 #Aggregation Algorithms 
 
 class FedAvgAggregator : 
-    """Standard Federated Averaging — accepts all neighbours equally."""
+    """Standard Federated Averaging: accepts all neighbors equally."""
 
     def __init__ (self,node_id: int ):
         self.node_id = node_id
@@ -192,7 +191,7 @@ class FedAvgAggregator :
         return _average_state_dicts(all_models), accepted, []
     
 class BALANCEAggregator:
-    """BALANCE: distance-threshold filtering with weighted aggregation."""
+    """BALANCE: Distance-threshold filtering with weighted aggregation."""
 
     def __init__(self, node_id: int, config: SimulationConfig, total_rounds: int):
         self.node_id = node_id
@@ -262,7 +261,7 @@ class BALANCEAggregator:
         
 class UBARAggregator: 
 
-    """UBAR: Two-stage Byzantine-robust aggregation."""
+    """UBAR: Two-stage Byzantine-robust aggregation (distance and performance filtering)."""
 
     def __init__(self, node_id: int, config: SimulationConfig, train_loader: DataLoader, device: torch.device, model_template:nn.Module):
         self.node_id = node_id
@@ -300,7 +299,7 @@ class UBARAggregator:
         stage1_rate = len(stage1_selected) / max(1, len(neighbor_models))
         self.stats["stage1_rates"].append(stage1_rate)
         
-        # Stage 2: Performance-based filtering
+        # Stage 2: Performance-based filtering 
         try:
             sample_batch = next(iter(self.train_loader))
             own_loss = self._compute_loss(own_model, sample_batch)
@@ -367,7 +366,7 @@ class UBARAggregator:
 #Federated Nodes
 
 class FederatedNode: 
-    """A single node in the federated network"""
+    """Represents a single node in the federated network."""
 
     def __init__(self, node_id: int, model: nn.Module, train_loader: DataLoader, test_loader: DataLoader, config: SimulationConfig, device: torch.device, total_rounds:int):
         self.node_id = node_id
@@ -469,7 +468,7 @@ class DecentralisedSimulator:
             "acceptance_rates": [],
             "honest_accuracies": [],
             "compromised_accuracies": [],
-            # --- Advanced metrics ---
+            #- Advanced metrics-
             "drift_per_round": [],               # {mean, std, per_node}
             "peer_deviation_per_round": [],       # {mean, per_node}
             "consensus_score_per_round": [],      # float
@@ -577,9 +576,9 @@ class DecentralisedSimulator:
         print(f"   Topology: {self.config.topology}")
         print(f"   Aggregation: {self.config.aggregation}")
 
-    # ------------------------------------------------------------------
+   
     #  Advanced per-round metrics
-    # ------------------------------------------------------------------
+    
 
     def _compute_drift(self, current_states, previous_states):
         """L2 norm of parameter change per node between consecutive rounds."""
@@ -693,7 +692,7 @@ class DecentralisedSimulator:
         # Store initial states for drift computation
         self._previous_states = [node.get_model_state() for node in self.nodes]
 
-        # --- Round-0 baseline advanced metrics ---
+        #Round-0 baseline advanced metrics
         peer_devs_0, consensus_0 = self._compute_peer_deviation(self._previous_states)
         self.results["drift_per_round"].append(
             {"mean": 0.0, "std": 0.0, "per_node": [0.0] * self.config.num_nodes})
@@ -712,22 +711,22 @@ class DecentralisedSimulator:
 
         # Training rounds
         for round_num in range(1, self.config.num_rounds + 1):
-            # --- Local training ---
+            #- Local training
             for node in self.nodes:
                 node.train_local()
             
-            # --- Aggregation (timed without detection) ---
+            # Aggregation (timed without detection) 
             t_agg_start = time.time()
-            # Bug 2 fix: capture pre-aggregation states before nodes are updated
+            
             pre_agg_states = [node.get_model_state() for node in self.nodes]
             self._aggregation_round(round_num)
             t_agg_end = time.time()
             time_without_detection = t_agg_end - t_agg_start
 
-            # --- Collect current model states ---
+            # Collect current model states 
             current_states = [node.get_model_state() for node in self.nodes]
 
-            # --- Drift computation ---
+            # Drift computation 
             drifts = self._compute_drift(current_states, self._previous_states)
             mean_drift = float(np.mean(drifts))
             std_drift = float(np.std(drifts))
@@ -735,14 +734,14 @@ class DecentralisedSimulator:
                 "mean": mean_drift, "std": std_drift, "per_node": drifts
             })
 
-            # --- Peer deviation + consensus ---
+            #- Peer deviation + consensus
             peer_devs, consensus = self._compute_peer_deviation(current_states)
             self.results["peer_deviation_per_round"].append({
                 "mean": float(np.mean(peer_devs)), "per_node": peer_devs
             })
             self.results["consensus_score_per_round"].append(consensus)
 
-            # --- Anomaly detection (timed) — BEFORE verification ---
+            #- Anomaly detection (timed) — BEFORE verification
             t_det_start = time.time()
             flags = self._detect_anomalies(drifts, round_num)
             self._update_confusion_matrix(flags, round_num)
@@ -752,9 +751,10 @@ class DecentralisedSimulator:
 
             z_scores = [f["z_score"] for f in flags] if flags else [0.0] * self.config.num_nodes
 
-            # ┌──────────────────────────────────────────┐
-            # │ VERIFICATION LAYER (post-acceptance)     │
-            # └──────────────────────────────────────────┘
+            
+            # VERIFICATION LAYER (post-acceptance)     
+            # Uses drifts, peer deviations, z-scores, and pre-aggregation states
+            # Can flag nodes for isolation or rescue based on configurable logic
             self._verification_flags = []  # reset per-round
             t_ver_start = time.time()
             verification_changed = self._run_verification(
@@ -771,24 +771,24 @@ class DecentralisedSimulator:
             if verification_changed:
                 current_states = [node.get_model_state() for node in self.nodes]
 
-            # --- Evaluation (AFTER verification) ---
+            # Evaluation (AFTER verification) 
             self._evaluate_round(round_num)
 
-            # --- Linear regression slope (over accumulated avg accuracies) ---
+            # Linear regression slope (plotted over accumulated avg accuracies)
             avg_accs = [float(np.mean(a)) for a in self.results["accuracies"]]
             slope, r_sq = self._compute_regression_slope(avg_accs, window=10)
             self.results["regression_slope_per_round"].append({
                 "slope": slope, "r_squared": r_sq
             })
 
-            # --- Overhead time ---
+            # Overhead time 
             time_with_all = time_without_detection + detection_overhead + verification_time
             self.results["overhead_time"]["without_detection"].append(
                 time_without_detection)
             self.results["overhead_time"]["with_detection"].append(
                 time_with_all)
 
-            # --- Structured metrics line (parsed by run_experiments.py) ---
+            # Structured metrics line 
             n_flagged = sum(1 for f in flags if f["flagged"]) if flags else 0
             n_ver_flagged = sum(1 for vf in self._verification_flags if vf["action"] == "flagged")
             n_ver_rescued = sum(1 for vf in self._verification_flags if vf["action"] == "rescued")
@@ -839,7 +839,7 @@ class DecentralisedSimulator:
                     raw_state = malicious_state if malicious_state else all_states[neighbor_idx]
                 else:
                     raw_state = all_states[neighbor_idx]
-                # Bug 5 fix: store the raw model that was actually sent to this node
+               
                 self._round_neighbor_models[(node_idx, neighbor_idx)] = raw_state
                 neighbor_states.append(raw_state)
             
@@ -854,18 +854,17 @@ class DecentralisedSimulator:
         # Update all nodes
         for node, new_state in zip(self.nodes, new_states):
             node.set_model_state(new_state)
-    
-    # ------------------------------------------------------------------
-    #  Verification Layer
-    # ------------------------------------------------------------------
+  
+    # Verification Layer
 
-    # Minimum network accuracy required before Phase 2 performance-based rescue
-    # is considered meaningful (near-zero accuracy makes Signal 4 trivially true).
+    """Minimum network accuracy required before Phase 2 performance-based rescue
+     is considered meaningful (near-zero accuracy makes Signal 4 trivially true).
+    Minimum number of rescues a node must accumulate before being permanently
+    promoted (prevents single-rescue promotions in the first 1 - 2 rounds).
+    _MIN_RESCUES_FOR_PROMOTION = 3"""
     _PHASE2_MIN_ACCURACY = 0.05
 
-    # Minimum number of rescues a node must accumulate before being permanently
-    # promoted (prevents single-rescue promotions in the first 1–2 rounds).
-    _MIN_RESCUES_FOR_PROMOTION = 3
+    
 
     def _evaluate_model(self, node_idx, model_state):
         """
@@ -885,13 +884,13 @@ class DecentralisedSimulator:
         Re-aggregate using the same blending formula as the aggregation algorithm.
         θ_new = α · θ_own + (1 - α) · mean(accepted_models)
         pre_agg_state: the node's locally-trained state before this round's aggregation.
-                       When provided, it is used as θ_own to avoid double-counting aggregation.
+        When provided, it is used as θ_own to avoid double-counting aggregation.
         """
         if not accepted_models:
             return self.nodes[node_idx].get_model_state()
 
         alpha = self.config.balance_alpha
-        # Bug 2 fix: use the pre-aggregation state as own_model when available
+        #use the pre-aggregation state as own_model when available
         own_model = pre_agg_state if pre_agg_state is not None else self.nodes[node_idx].get_model_state()
 
         # Average accepted models
@@ -908,10 +907,9 @@ class DecentralisedSimulator:
         return result
 
     def _get_neighbor_model(self, node_idx, neighbor_idx, fallback_states):
-        """
-        Bug 5 fix: return the raw model that neighbour_idx sent to node_idx this round.
-        Falls back to fallback_states[neighbor_idx] if no raw model was recorded.
-        """
+        #return the raw model that neighbour_idx sent to node_idx this round.
+        #Falls back to fallback_states[neighbor_idx] if no raw model was recorded.
+    
         key = (node_idx, neighbor_idx)
         if key in self._round_neighbor_models:
             return self._round_neighbor_models[key]
@@ -919,15 +917,15 @@ class DecentralisedSimulator:
 
     def _verification_phase1(self, node_idx, S, R, theta_agg, acc_agg,
                               z_scores, original_states, round_num, pre_agg_state=None):
-        """
-        Phase 1: Scan accepted set for malicious nodes that passed filtering.
-        Modifies S and R in-place. Returns: bool — whether any nodes were moved.
-        """
+        
+        # Step 1: Scan accepted set for malicious nodes that passed filtering.
+       # Modifies S and R in-place. Returns: bool — whether any nodes were moved.
+        
         eps = self.config.verification_epsilon
         z_low = self.config.z_low
         z_high = self.config.z_high
 
-        # Pre-filter: only evaluate ambiguous nodes
+        # Only evaluate ambiguous nodes
         candidates = [
             j for j in S
             if z_low < abs(z_scores[j]) < z_high
@@ -950,17 +948,18 @@ class DecentralisedSimulator:
             acc_without_j = self._evaluate_model(node_idx, theta_without_j)
 
             delta_perf = acc_without_j - acc_agg
-
+    #Detecting false negatives in the rejected set via 4 performance signals. If the performance gate and  2/3 signals
+    # show that a node is an honest node, it will be rescued.
             if delta_perf > eps:
-                # Performance gate triggered — check historical consistency
+                # check historical consistency
                 signals = 0
 
-                # Signal 1: Low trust
+                # Signal 1: Trust score
                 sig_low_trust = self._trust_scores[j] < 0.3
                 if sig_low_trust:
                     signals += 1
 
-                # Signal 2: High historical drift
+                # Signal 2:  historical drift
                 sig_high_drift = False
                 if len(self._drift_history[j]) >= 2:
                     node_mean_drift = sum(self._drift_history[j]) / len(self._drift_history[j])
@@ -975,7 +974,7 @@ class DecentralisedSimulator:
                         sig_high_drift = True
                         signals += 1
 
-                # Signal 3: High historical peer deviation
+                # Signal 3: Historical peer deviation
                 sig_high_pdev = False
                 if len(self._peer_dev_history[j]) >= 2:
                     node_mean_pdev = sum(self._peer_dev_history[j]) / len(self._peer_dev_history[j])
@@ -1017,8 +1016,8 @@ class DecentralisedSimulator:
     def _verification_phase2(self, node_idx, S, R, theta_agg, acc_agg,
                               z_scores, drifts, peer_devs, original_states, round_num, pre_agg_state=None):
         """
-        Phase 2: Rescue honest nodes wrongly excluded by aggregation filter.
-        Modifies S and R in-place. Returns: bool — whether any nodes were rescued.
+        Step 2: Rescue honest nodes wrongly excluded by aggregation filter.
+        Modifies S and R in-place. Returns: boolean — whether any nodes were rescued.
         """
         eps = self.config.verification_epsilon
         z_high = self.config.z_high
@@ -1033,9 +1032,7 @@ class DecentralisedSimulator:
         if not candidates:
             return False
 
-        # Bug 1 fix: skip Phase 2 entirely when model accuracy is too low for
-        # performance-based rescue to be meaningful (near-zero accuracy makes
-        # Signal 4 trivially true for almost any model)
+
         if acc_agg < self._PHASE2_MIN_ACCURACY:
             return False
 
@@ -1054,7 +1051,7 @@ class DecentralisedSimulator:
             signals = 0
 
             # Signal 1: Trust score — must be above initialisation value so nodes
-            # can't auto-pass at the start (Bug 1 fix: threshold raised from 0.5 to 0.6)
+            
             sig_trust_ok = self._trust_scores[k] >= 0.6
             if sig_trust_ok:
                 signals += 1
@@ -1069,8 +1066,7 @@ class DecentralisedSimulator:
             if sig_drift_ok:
                 signals += 1
 
-            # Signal 4: Performance — inclusion doesn't hurt
-            # Bug 5 fix: use raw neighbour model, Bug 2 fix: pass pre_agg_state
+            # Signal 4: Performance 
             S_with_k = S + [k]
             models_with_k = [self._get_neighbor_model(node_idx, j, original_states) for j in S_with_k]
             theta_with_k = self._re_aggregate(node_idx, models_with_k, pre_agg_state)
@@ -1106,15 +1102,15 @@ class DecentralisedSimulator:
         return changed
 
     def _verification_phase4(self, round_num, z_scores):
-        """
-        Phase 4: Update trust scores for all nodes not already modified by
-        Phases 1/2. Handle automatic rescue promotion and revocation.
-        """
+        
+        #Step 4: Update trust scores for all nodes not already modified by
+        #Step 1/2. Handle automatic rescue promotion and revocation.
+        
         beta = self.config.trust_decay
         z_high = self.config.z_high
         r_revoke = self.config.rescue_revocation_rounds
 
-        # Collect node IDs already modified by phases 1 and 2 this round
+        # Collect node IDs already modified by step 1 and 2 this round
         modified_nodes = set()
         for flag in self._verification_flags:
             if flag.get("action") in ("flagged", "rescued"):
@@ -1123,7 +1119,7 @@ class DecentralisedSimulator:
         # Update trust for non-modified nodes
         for i in range(self.config.num_nodes):
             if i not in modified_nodes:
-                was_flagged = abs(z_scores[i]) > 2.0  # first-pass flag threshold
+                was_flagged = abs(z_scores[i]) > 2.0  # threshold
                 self._trust_scores[i] = (
                     beta * self._trust_scores[i]
                     + (1 - beta) * (0.0 if was_flagged else 1.0)
@@ -1131,9 +1127,6 @@ class DecentralisedSimulator:
 
         # Automatic rescue promotion
         for i in range(self.config.num_nodes):
-            # Bug 4 fix: require at least _MIN_RESCUES_FOR_PROMOTION rescues before
-            # promotion to prevent single-rescue promotions in early rounds (round 1-2
-            # gave threshold=1)
             promotion_threshold = max(self._MIN_RESCUES_FOR_PROMOTION, -(-round_num // 2))  # max(min, ceil(round_num/2))
             if self._rescue_counts[i] >= promotion_threshold and not self._permanently_rescued[i]:
                 self._permanently_rescued[i] = True
@@ -1173,9 +1166,6 @@ class DecentralisedSimulator:
                 self._peer_dev_history[i].pop(0)
 
         any_changed = False
-
-        # Bug 3 fix: snapshot original states so per-node updates don't cascade
-        # into subsequent nodes' verification decisions.
         original_states = list(all_states)
         # Collect all model updates; apply them after the full loop.
         pending_updates = {}
@@ -1199,7 +1189,7 @@ class DecentralisedSimulator:
             pre_agg_state = pre_agg_states[node_idx] if pre_agg_states else None
             changed = False
 
-            # ── PHASE 1 ──
+            #PHASE 1
             changed_p1 = self._verification_phase1(
                 node_idx, S, R, theta_agg, acc_agg,
                 z_scores, original_states, round_num, pre_agg_state
@@ -1207,7 +1197,7 @@ class DecentralisedSimulator:
             if changed_p1:
                 changed = True
 
-            # ── PHASE 2 ──
+            # PHASE 2 
             changed_p2 = self._verification_phase2(
                 node_idx, S, R, theta_agg, acc_agg,
                 z_scores, drifts, peer_devs, original_states, round_num, pre_agg_state
@@ -1215,13 +1205,13 @@ class DecentralisedSimulator:
             if changed_p2:
                 changed = True
 
-            # ── PHASE 3: Re-aggregate if anything changed ──
+            # PHASE 3: Re-aggregate if anything changed
             if changed:
-                # Bug 5 fix: use raw neighbour models; Bug 2 fix: pass pre_agg_state
+                
                 accepted_models = [self._get_neighbor_model(node_idx, j, original_states) for j in S]
                 if accepted_models:
                     theta_final = self._re_aggregate(node_idx, accepted_models, pre_agg_state)
-                    # Bug 3 fix: defer node state update until after the full loop
+                    
                     pending_updates[node_idx] = theta_final
                 any_changed = True
 
@@ -1229,13 +1219,11 @@ class DecentralisedSimulator:
             self._round_accepted[node_idx] = S
             self._round_rejected[node_idx] = R
 
-        # Bug 3 fix: apply all deferred model updates now that every node has
-        # been evaluated against the consistent original_states snapshot.
         for idx, state in pending_updates.items():
             self.nodes[idx].set_model_state(state)
             all_states[idx] = state
 
-        # ── PHASE 4: Trust updates and promotion ──
+        #PHASE 4: Trust updates and promotion
         self._verification_phase4(round_num, z_scores)
 
         return any_changed
@@ -1291,7 +1279,7 @@ class DecentralisedSimulator:
             print(f"Compromised Nodes: {comp_acc:.4f}")
             print(f"Attack Impact: {honest_acc - comp_acc:.4f}")
 
-        # --- Advanced metrics summary ---
+        #Advanced metrics summary
         if self.results["drift_per_round"]:
             last_drift = self.results["drift_per_round"][-1]
             print(f"\nDrift (last round):  mean={last_drift['mean']:.6f}  std={last_drift['std']:.6f}")
@@ -1321,7 +1309,7 @@ class DecentralisedSimulator:
             print(f"  Without detection: {avg_wo:.4f}s")
             print(f"  With detection:    {avg_w:.4f}s")
 
-        # --- Verification layer summary ---
+        #Verification layer summary
         if self.config.verification_enabled and self.config.aggregation != "fedavg":
             total_p1 = sum(
                 sum(1 for vf in rflags if vf["action"] == "flagged")
@@ -1481,14 +1469,14 @@ class DecentralisedSimulator:
 
         print(f"\nResults saved to {filepath}")
 
-        # Optional: export to Google Sheets if sheets_config.json is present
+        # Export Google Sheets if sheets_config.json is present
         try:
             from sheets_exporter import export_results as _sheets_export
             _sheets_export(filepath)
         except Exception:
             pass  # Sheets export is always best-effort
 
-# ── Command Line Interface ──────────────────────────────────────
+# Command line interface interactive set up
 
 DATASETS     = ["femnist", "shakespeare"]
 AGGREGATORS  = ["fedavg", "balance", "ubar"]
@@ -1597,7 +1585,7 @@ def main():
     parser.add_argument("--rescue-revocation-rounds", type=int, default=3,
                         help="Consecutive anomalous rounds to revoke rescue")
 
-    # Other
+    # Seed
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=str, default="results/experiment.json")
     

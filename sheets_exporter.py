@@ -112,7 +112,7 @@ def export_results(results_path: str, config_path: str = "sheets_config.json") -
         print(f"[Sheets] Credentials file '{credentials_file}' not found — skipping export.")
         return False
 
-    # -- dependencies 
+    # dependencies 
     try:
         import gspread                                          # type: ignore
         from google.oauth2.service_account import Credentials  # type: ignore
@@ -159,7 +159,7 @@ def export_results(results_path: str, config_path: str = "sheets_config.json") -
         print(f"[Sheets] Authentication / open failed: {exc}")
         return False
 
-    # -- find or create the right worksheet 
+    # find or create the right worksheet 
     tab = tab_name_for(dataset, attack_type, attack_ratio)
     try:
         all_sheets = spread.worksheets()
