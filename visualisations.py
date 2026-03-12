@@ -314,7 +314,6 @@ def generate_summary_report(results_files: Dict[str, str], output_path: str):
         with open(filepath, 'r') as f:
             data = json.load(f)
         
-        report.append("\n----------------------------------------")
         report.append(f"EXPERIMENT: {label}")
         report.append("----------------------------------------")
         

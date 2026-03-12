@@ -45,9 +45,9 @@ class SimulationConfig:
 
     # Verification layer parameters
     verification_enabled: bool = True          # Enable/disable verification layer
-    verification_epsilon: float = 0.01         # Performance threshold (accuracy delta)
+    verification_epsilon: float = 0.05         # Performance threshold (accuracy delta)
     trust_decay: float = 0.9                   # Exponential decay for trust score (beta)
-    trust_initial: float = 0.5                 # Initial trust score for all nodes
+    trust_initial: float = 0.6                 # Initial trust score for all nodes
     trust_penalty: float = 0.3                 # Trust reduction on confirmed flag (penalty)
     trust_boost: float = 0.1                   # Trust increase on rescue (boost)
     z_low: float = 1.0                         # Lower bound for ambiguous z-score range
@@ -437,7 +437,7 @@ class FederatedNode:
         """Set the model parameters"""
         self.model.load_state_dict(state, strict = False)
 
-# ── Main Simulator ──────────────────────────────────────────────
+# Main Simulator 
 
 class DecentralisedSimulator:
     """Main simulator for decentralised federated learning"""
@@ -857,11 +857,8 @@ class DecentralisedSimulator:
   
     # Verification Layer
 
-    """Minimum network accuracy required before Phase 2 performance-based rescue
-     is considered meaningful (near-zero accuracy makes Signal 4 trivially true).
-    Minimum number of rescues a node must accumulate before being permanently
-    promoted (prevents single-rescue promotions in the first 1 - 2 rounds).
-    _MIN_RESCUES_FOR_PROMOTION = 3"""
+    # Minimum number of rescues a node must accumulate before being permanently promoted
+    _MIN_RESCUES_FOR_PROMOTION = 3
     _PHASE2_MIN_ACCURACY = 0.05
 
     
@@ -917,15 +914,18 @@ class DecentralisedSimulator:
 
     def _verification_phase1(self, node_idx, S, R, theta_agg, acc_agg,
                               z_scores, original_states, round_num, pre_agg_state=None):
-        
+
         # Step 1: Scan accepted set for malicious nodes that passed filtering.
-       # Modifies S and R in-place. Returns: bool — whether any nodes were moved.
-        
+        # Modifies S and R in-place. Returns: bool — whether any nodes were moved.
+    
+        if round_num < self.config.verification_history_window:
+            return False
+
         eps = self.config.verification_epsilon
         z_low = self.config.z_low
         z_high = self.config.z_high
 
-        # Only evaluate ambiguous nodes
+        # Only evaluate nodes in the ambiguous z-score band
         candidates = [
             j for j in S
             if z_low < abs(z_scores[j]) < z_high
@@ -935,81 +935,92 @@ class DecentralisedSimulator:
         if not candidates:
             return False
 
-        changed = False
+
+        # We now collect all flagging decisions in one pass, then apply them.
+        original_S = list(S)  # snapshot of S for consistent leave-one-out baseline
+        nodes_to_flag = []
 
         for j in candidates:
-            # Leave-one-out: re-aggregate without node j
-            S_without_j = [k for k in S if k != j]
+            # Leave-one-out: remove j from the ORIGINAL accepted set
+            S_without_j = [k for k in original_S if k != j]
             if not S_without_j:
-                continue  # can't remove the only accepted node
+                continue  # can't remove the only accepted neighbour
 
-            models_without_j = [self._get_neighbor_model(node_idx, k, original_states) for k in S_without_j]
+            models_without_j = [
+                self._get_neighbor_model(node_idx, k, original_states)
+                for k in S_without_j
+            ]
             theta_without_j = self._re_aggregate(node_idx, models_without_j, pre_agg_state)
             acc_without_j = self._evaluate_model(node_idx, theta_without_j)
-
             delta_perf = acc_without_j - acc_agg
-    #Detecting false negatives in the rejected set via 4 performance signals. If the performance gate and  2/3 signals
-    # show that a node is an honest node, it will be rescued.
+
             if delta_perf > eps:
-                # check historical consistency
+                # Performance gate passed — check all 3 historical signals.
                 signals = 0
 
-                # Signal 1: Trust score
+                # Signal 1: Persistently low trust
                 sig_low_trust = self._trust_scores[j] < 0.3
                 if sig_low_trust:
                     signals += 1
 
-                # Signal 2:  historical drift
+                # Signal 2: Historical drift above population mean
                 sig_high_drift = False
-                if len(self._drift_history[j]) >= 2:
+                if len(self._drift_history[j]) >= self.config.verification_history_window:
                     node_mean_drift = sum(self._drift_history[j]) / len(self._drift_history[j])
-                    all_mean_drifts = []
-                    for i in range(self.config.num_nodes):
-                        if self._drift_history[i]:
-                            all_mean_drifts.append(
-                                sum(self._drift_history[i]) / len(self._drift_history[i])
-                            )
+                    all_mean_drifts = [
+                        sum(self._drift_history[i]) / len(self._drift_history[i])
+                        for i in range(self.config.num_nodes)
+                        if self._drift_history[i]
+                    ]
                     pop_mean_drift = sum(all_mean_drifts) / len(all_mean_drifts) if all_mean_drifts else 0.0
                     if node_mean_drift > pop_mean_drift:
                         sig_high_drift = True
                         signals += 1
 
-                # Signal 3: Historical peer deviation
+                # Signal 3: Historical peer deviation above population mean
                 sig_high_pdev = False
-                if len(self._peer_dev_history[j]) >= 2:
+                if len(self._peer_dev_history[j]) >= self.config.verification_history_window:
                     node_mean_pdev = sum(self._peer_dev_history[j]) / len(self._peer_dev_history[j])
-                    all_mean_pdevs = []
-                    for i in range(self.config.num_nodes):
-                        if self._peer_dev_history[i]:
-                            all_mean_pdevs.append(
-                                sum(self._peer_dev_history[i]) / len(self._peer_dev_history[i])
-                            )
+                    all_mean_pdevs = [
+                        sum(self._peer_dev_history[i]) / len(self._peer_dev_history[i])
+                        for i in range(self.config.num_nodes)
+                        if self._peer_dev_history[i]
+                    ]
                     pop_mean_pdev = sum(all_mean_pdevs) / len(all_mean_pdevs) if all_mean_pdevs else 0.0
                     if node_mean_pdev > pop_mean_pdev:
                         sig_high_pdev = True
                         signals += 1
 
-                # Flagging rule: performance gate AND ≥2 of 3 historical signals
-                if signals >= 2:
-                    trust_before = self._trust_scores[j]
-                    S.remove(j)
-                    R.append(j)
-                    self._trust_scores[j] = max(0.0, self._trust_scores[j] - self.config.trust_penalty)
-                    changed = True
+                # Flagging rule: performance gate AND ALL 3 historical signals
+                # (was ≥ 2 — tightened to eliminate false positives on honest
+                # but heterogeneous nodes)
+                if signals >= 3:
+                    nodes_to_flag.append((j, delta_perf, sig_low_trust, sig_high_drift, sig_high_pdev))
 
-                    self._verification_flags.append({
-                        "node_id": j,
-                        "phase": 1,
-                        "action": "flagged",
-                        "delta_perf": float(delta_perf),
-                        "trust_before": float(trust_before),
-                        "trust_after": float(self._trust_scores[j]),
-                        "signals": {
-                            "low_trust": sig_low_trust,
-                            "high_drift": sig_high_drift,
-                            "high_peer_dev": sig_high_pdev,
-                        },
-                    })
+        # Apply all flagging decisions together (batch)
+        changed = False
+        for (j, delta_perf, sig_low_trust, sig_high_drift, sig_high_pdev) in nodes_to_flag:
+            if j not in S:
+                continue  # guard — should not happen, but be safe
+            trust_before = self._trust_scores[j]
+            S.remove(j)
+            R.append(j)
+            self._trust_scores[j] = max(0.0, self._trust_scores[j] - self.config.trust_penalty)
+            changed = True
+
+            self._verification_flags.append({
+                "node_id": j,
+                "phase": 1,
+                "action": "flagged",
+                "delta_perf": float(delta_perf),
+                "trust_before": float(trust_before),
+                "trust_after": float(self._trust_scores[j]),
+                "signals": {
+                    "low_trust": sig_low_trust,
+                    "high_drift": sig_high_drift,
+                    "high_peer_dev": sig_high_pdev,
+                },
+            })
 
         return changed
 
@@ -1453,7 +1464,7 @@ class DecentralisedSimulator:
                 "attack_ratio": self.config.attack_ratio,
                 "attack_type":  self.config.attack_type,
             },
-            # Tabular round results (human-readable as a JSON table)
+            # Tabular round results displayed in the terminal (human-readable)
             "round_results": round_results,
             # High-level summary
             "summary": summary,
@@ -1585,7 +1596,7 @@ def main():
     parser.add_argument("--rescue-revocation-rounds", type=int, default=3,
                         help="Consecutive anomalous rounds to revoke rescue")
 
-    # Seed
+    # Seed (fixed at 42 by default, but can be overridden)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=str, default="results/experiment.json")
     

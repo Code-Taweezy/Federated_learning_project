@@ -70,7 +70,7 @@ class Experiment:
         if self.verification:
             cmd.append('--verification')
         else:
-            cmd.append('no-verification')
+            cmd.append('--no-verification')
         cmd.extend(self.extra_args)
         return cmd
 
@@ -271,8 +271,8 @@ class ExperimentRunner:
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
+                stderr=subprocess.PIPE,   # FIX: capture stderr separately so crash tracebacks
+                text=True,                #      are always visible, not silently merged/dropped
                 bufsize=1,
             )
 
@@ -326,6 +326,9 @@ class ExperimentRunner:
                         dashboard.notify_round(exp.name, row)
 
             proc.wait()
+            stderr_output = proc.stderr.read()
+            if stderr_output.strip():
+                print(f"\n[STDERR from {exp.name}]:\n{stderr_output.strip()}\n")
             elapsed = time.time() - start_time
 
             if proc.returncode == 0:
@@ -395,18 +398,37 @@ class ExperimentRunner:
                 try:
                     with open(filepath, 'r') as f:
                         data = json.load(f)
-                    
-                    final_acc = data['results']['accuracies'][-1]
+
+                    # Support both old flat layout and new nested layout
+                    raw_results = data.get('results', {})
+                    accuracies = raw_results.get('accuracies', [])
+                    if not accuracies:
+                        print(f"  {name:30s}: (no accuracy data in results file)")
+                        continue
+
+                    final_acc = accuracies[-1]
                     avg_acc = sum(final_acc) / len(final_acc)
-                    
-                    if data['compromised_nodes']:
-                        honest_acc = data['results']['honest_accuracies'][-1]
-                        print(f"  {name:20s}: Honest={honest_acc:.4f}, Overall={avg_acc:.4f}")
+
+                    # Verification info (None when disabled — expected for ablation runs)
+                    summary = data.get('summary', {})
+                    ver = summary.get('verification')
+                    ver_str = ""
+                    if ver is not None:
+                        p1 = ver.get('total_phase1_flags', 0)
+                        p2 = ver.get('total_phase2_rescues', 0)
+                        ver_str = f"  [ver: P1={p1} flags, P2={p2} rescues]"
                     else:
-                        print(f"  {name:20s}: Accuracy={avg_acc:.4f}")
-                
-                except:
-                    print(f"  {name:20s}: (error reading results)")
+                        ver_str = "  [verification disabled]"
+
+                    compromised = data.get('compromised_nodes', [])
+                    honest_accs = raw_results.get('honest_accuracies', [])
+                    if compromised and honest_accs:
+                        print(f"  {name:30s}: Honest={honest_accs[-1]:.4f}  Overall={avg_acc:.4f}{ver_str}")
+                    else:
+                        print(f"  {name:30s}: Accuracy={avg_acc:.4f}{ver_str}")
+
+                except Exception as e:
+                    print(f"  {name:30s}: (error reading results — {e})")
         
         print()
 
