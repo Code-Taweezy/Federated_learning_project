@@ -5,7 +5,7 @@ import numpy as np
 import random 
 import time 
 import json 
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 from dataclasses import dataclass 
 import argparse
 
@@ -45,15 +45,15 @@ class SimulationConfig:
 
     # Verification layer parameters
     verification_enabled: bool = True          # Enable/disable verification layer
-    verification_epsilon: float = 0.05         # Performance threshold (accuracy delta)
-    trust_decay: float = 0.9                   # Exponential decay for trust score (beta)
-    trust_initial: float = 0.6                 # Initial trust score for all nodes
-    trust_penalty: float = 0.3                 # Trust reduction on confirmed flag (penalty)
-    trust_boost: float = 0.1                   # Trust increase on rescue (boost)
-    z_low: float = 1.0                         # Lower bound for ambiguous z-score range
-    z_high: float = 3.0                        # Upper bound for ambiguous z-score range
-    verification_history_window: int = 5       # Rounds of history for consistency checks
-    rescue_revocation_rounds: int = 3          # Consecutive anomalous rounds to revoke rescue
+    verification_epsilon: float = 0.05         # Minimum validation improvement required before flagging/removing a peer
+    trust_decay: float = 0.95                  # Exponential decay for trust score updates
+    trust_initial: float = 0.5                 # Initial trust score for all nodes
+    trust_penalty: float = 0.2                 # Trust reduction after a confirmed verification flag
+    trust_boost: float = 0.05                  # Trust increase after a successful rescue
+    z_low: float = 1.5                         # Lower bound for ambiguous z-score range
+    z_high: float = 2.5                        # Upper bound for ambiguous z-score range
+    verification_history_window: int = 10      # Rounds of history used by verification
+    rescue_revocation_rounds: int = 3          # Reserved for backwards-compatible CLI support
 
     def __post_init__(self):
         if not (0.0 <= self.attack_ratio <= 0.5):
@@ -486,9 +486,6 @@ class DecentralisedSimulator:
 
         # Verification layer persistent state
         self._trust_scores = [self.config.trust_initial] * self.config.num_nodes
-        self._rescue_counts = [0] * self.config.num_nodes
-        self._permanently_rescued = [False] * self.config.num_nodes
-        self._consecutive_anomalous = [0] * self.config.num_nodes
         self._drift_history = [[] for _ in range(self.config.num_nodes)]
         self._peer_dev_history = [[] for _ in range(self.config.num_nodes)]
         self._verification_flags = []  # per-round verification flags
@@ -496,7 +493,12 @@ class DecentralisedSimulator:
         self._verification_time_per_round = []  # per-round verification time
         self._round_accepted = []  # per-node accepted sets (set each round)
         self._round_rejected = []  # per-node rejected sets (set each round)
-        self._round_neighbor_models = {}  # (node_idx, neighbor_idx) -> raw state_dict sent this round
+        self._round_neighbor_models = {}  # (receiver_idx, sender_idx) -> raw state_dict sent this round
+        self._round_message_stats = {}  # (receiver_idx, sender_idx) -> message-level verification features
+        self._verification_suspicion_counts = {}  # (receiver_idx, sender_idx) -> consecutive suspicious rounds
+        self._verification_warmup_rounds = max(
+            3, min(self.config.num_rounds, self.config.verification_history_window)
+        )
     
     def _set_seed(self):
         """Set random seeds."""
@@ -856,10 +858,8 @@ class DecentralisedSimulator:
             node.set_model_state(new_state)
   
     # Verification Layer
-
-    # Minimum number of rescues a node must accumulate before being permanently promoted
-    _MIN_RESCUES_FOR_PROMOTION = 3
     _PHASE2_MIN_ACCURACY = 0.05
+    _FLAG_CONSECUTIVE_REQUIRED = 2
 
     
 
@@ -904,121 +904,176 @@ class DecentralisedSimulator:
         return result
 
     def _get_neighbor_model(self, node_idx, neighbor_idx, fallback_states):
-        #return the raw model that neighbour_idx sent to node_idx this round.
-        #Falls back to fallback_states[neighbor_idx] if no raw model was recorded.
-    
+        """Return the raw model that ``neighbor_idx`` sent to ``node_idx`` this round."""
         key = (node_idx, neighbor_idx)
         if key in self._round_neighbor_models:
             return self._round_neighbor_models[key]
         return fallback_states[neighbor_idx]
 
+    def _state_distance(self, model1: Dict[str, torch.Tensor], model2: Dict[str, torch.Tensor]) -> float:
+        """Compute the L2 distance between two model state dicts."""
+        total = 0.0
+        for key in model1.keys():
+            diff = model1[key].float() - model2[key].float()
+            total += torch.sum(diff * diff).item()
+        return float(np.sqrt(total))
+
+    def _message_z_scores(self, values: List[float]) -> List[float]:
+        """Return z-scores for a list of scalar message features."""
+        if not values:
+            return []
+        mean_v = float(np.mean(values))
+        std_v = float(np.std(values))
+        if std_v <= 1e-12:
+            return [0.0 for _ in values]
+        return [float((v - mean_v) / std_v) for v in values]
+
+    def _build_message_stats(self, node_idx: int, accepted_ids: List[int], rejected_ids: List[int],
+                             pre_agg_state: Dict[str, torch.Tensor], fallback_states: List[Dict[str, torch.Tensor]]) -> Dict[int, Dict[str, float]]:
+        """
+        Build message-level verification features for every neighbour of ``node_idx``.
+
+        Features are derived from the actual raw message sent this round, not from the
+        sender's final post-aggregation node state.
+        """
+        neighbor_ids = list(accepted_ids) + list(rejected_ids)
+        if not neighbor_ids:
+            return {}
+
+        messages = {
+            nid: self._get_neighbor_model(node_idx, nid, fallback_states)
+            for nid in neighbor_ids
+        }
+        distances_to_own = {
+            nid: self._state_distance(pre_agg_state, msg_state)
+            for nid, msg_state in messages.items()
+        }
+        values = list(distances_to_own.values())
+        z_scores = self._message_z_scores(values)
+        z_by_neighbor = {
+            nid: z_scores[idx]
+            for idx, nid in enumerate(distances_to_own.keys())
+        }
+
+        stats = {}
+        for nid in neighbor_ids:
+            other_models = [messages[oid] for oid in neighbor_ids if oid != nid]
+            if other_models:
+                median_like = _average_state_dicts(other_models)
+                peer_distance = self._state_distance(messages[nid], median_like)
+            else:
+                peer_distance = 0.0
+
+            stats[nid] = {
+                "distance_to_own": float(distances_to_own[nid]),
+                "peer_distance": float(peer_distance),
+                "z_score": float(z_by_neighbor.get(nid, 0.0)),
+            }
+        return stats
+
     def _verification_phase1(self, node_idx, S, R, theta_agg, acc_agg,
                               z_scores, original_states, round_num, pre_agg_state=None):
-
-        # Step 1: Scan accepted set for malicious nodes that passed filtering.
-        # Modifies S and R in-place. Returns: bool — whether any nodes were moved.
-    
-        if round_num < self.config.verification_history_window:
+        """
+        Phase 1: conservatively remove already-accepted neighbours whose *messages*
+        look persistently suspicious and whose removal measurably improves validation.
+        """
+        if round_num < self._verification_warmup_rounds:
             return False
 
         eps = self.config.verification_epsilon
-        z_low = self.config.z_low
-        z_high = self.config.z_high
-
-        # Only evaluate nodes in the ambiguous z-score band
-        candidates = [
-            j for j in S
-            if z_low < abs(z_scores[j]) < z_high
-            and not self._permanently_rescued[j]
-        ]
-
-        if not candidates:
+        msg_stats = self._build_message_stats(node_idx, S, R, pre_agg_state, original_states)
+        if not msg_stats:
             return False
 
-
-        # We now collect all flagging decisions in one pass, then apply them.
-        original_S = list(S)  # snapshot of S for consistent leave-one-out baseline
+        original_S = list(S)
         nodes_to_flag = []
 
-        for j in candidates:
-            # Leave-one-out: remove j from the ORIGINAL accepted set
-            S_without_j = [k for k in original_S if k != j]
-            if not S_without_j:
-                continue  # can't remove the only accepted neighbour
+        hist_ready = len([h for h in self._drift_history if h]) >= 1
+        drift_means = [
+            sum(hist) / len(hist) for hist in self._drift_history if hist
+        ]
+        peer_means = [
+            sum(hist) / len(hist) for hist in self._peer_dev_history if hist
+        ]
+        pop_mean_drift = float(np.mean(drift_means)) if drift_means else 0.0
+        pop_mean_peer = float(np.mean(peer_means)) if peer_means else 0.0
+
+        for j in list(S):
+            message_info = msg_stats.get(j)
+            if not message_info:
+                continue
+
+            msg_z = abs(message_info["z_score"])
+            if not (self.config.z_low <= msg_z <= self.config.z_high):
+                self._verification_suspicion_counts[(node_idx, j)] = 0
+                continue
+
+            s_without_j = [k for k in original_S if k != j]
+            if not s_without_j:
+                self._verification_suspicion_counts[(node_idx, j)] = 0
+                continue
 
             models_without_j = [
                 self._get_neighbor_model(node_idx, k, original_states)
-                for k in S_without_j
+                for k in s_without_j
             ]
             theta_without_j = self._re_aggregate(node_idx, models_without_j, pre_agg_state)
             acc_without_j = self._evaluate_model(node_idx, theta_without_j)
             delta_perf = acc_without_j - acc_agg
 
-            if delta_perf > eps:
-                # Performance gate passed — check all 3 historical signals.
-                signals = 0
+            sig_low_trust = self._trust_scores[j] < 0.35
+            sig_high_drift = bool(
+                self._drift_history[j] and
+                (sum(self._drift_history[j]) / len(self._drift_history[j])) > pop_mean_drift
+            )
+            sig_high_pdev = bool(
+                self._peer_dev_history[j] and
+                (sum(self._peer_dev_history[j]) / len(self._peer_dev_history[j])) > pop_mean_peer
+            )
+            sig_message_far = message_info["peer_distance"] >= message_info["distance_to_own"]
 
-                # Signal 1: Persistently low trust
-                sig_low_trust = self._trust_scores[j] < 0.3
-                if sig_low_trust:
-                    signals += 1
+            signals = sum([sig_low_trust, sig_high_drift, sig_high_pdev, sig_message_far])
 
-                # Signal 2: Historical drift above population mean
-                sig_high_drift = False
-                if len(self._drift_history[j]) >= self.config.verification_history_window:
-                    node_mean_drift = sum(self._drift_history[j]) / len(self._drift_history[j])
-                    all_mean_drifts = [
-                        sum(self._drift_history[i]) / len(self._drift_history[i])
-                        for i in range(self.config.num_nodes)
-                        if self._drift_history[i]
-                    ]
-                    pop_mean_drift = sum(all_mean_drifts) / len(all_mean_drifts) if all_mean_drifts else 0.0
-                    if node_mean_drift > pop_mean_drift:
-                        sig_high_drift = True
-                        signals += 1
+            suspicious = delta_perf > eps and signals >= 3 and hist_ready
+            suspicion_key = (node_idx, j)
+            if suspicious:
+                self._verification_suspicion_counts[suspicion_key] = (
+                    self._verification_suspicion_counts.get(suspicion_key, 0) + 1
+                )
+            else:
+                self._verification_suspicion_counts[suspicion_key] = 0
 
-                # Signal 3: Historical peer deviation above population mean
-                sig_high_pdev = False
-                if len(self._peer_dev_history[j]) >= self.config.verification_history_window:
-                    node_mean_pdev = sum(self._peer_dev_history[j]) / len(self._peer_dev_history[j])
-                    all_mean_pdevs = [
-                        sum(self._peer_dev_history[i]) / len(self._peer_dev_history[i])
-                        for i in range(self.config.num_nodes)
-                        if self._peer_dev_history[i]
-                    ]
-                    pop_mean_pdev = sum(all_mean_pdevs) / len(all_mean_pdevs) if all_mean_pdevs else 0.0
-                    if node_mean_pdev > pop_mean_pdev:
-                        sig_high_pdev = True
-                        signals += 1
+            if self._verification_suspicion_counts[suspicion_key] < self._FLAG_CONSECUTIVE_REQUIRED:
+                continue
 
-                # Flagging rule: performance gate AND ALL 3 historical signals
-                # (was ≥ 2 — tightened to eliminate false positives on honest
-                # but heterogeneous nodes)
-                if signals >= 3:
-                    nodes_to_flag.append((j, delta_perf, sig_low_trust, sig_high_drift, sig_high_pdev))
+            nodes_to_flag.append((j, delta_perf, message_info, sig_low_trust, sig_high_drift, sig_high_pdev, sig_message_far))
 
-        # Apply all flagging decisions together (batch)
         changed = False
-        for (j, delta_perf, sig_low_trust, sig_high_drift, sig_high_pdev) in nodes_to_flag:
+        for (j, delta_perf, message_info, sig_low_trust, sig_high_drift, sig_high_pdev, sig_message_far) in nodes_to_flag:
             if j not in S:
-                continue  # guard — should not happen, but be safe
+                continue
             trust_before = self._trust_scores[j]
             S.remove(j)
-            R.append(j)
+            if j not in R:
+                R.append(j)
             self._trust_scores[j] = max(0.0, self._trust_scores[j] - self.config.trust_penalty)
+            self._verification_suspicion_counts[(node_idx, j)] = 0
             changed = True
 
             self._verification_flags.append({
                 "node_id": j,
+                "target_node": node_idx,
                 "phase": 1,
                 "action": "flagged",
                 "delta_perf": float(delta_perf),
                 "trust_before": float(trust_before),
                 "trust_after": float(self._trust_scores[j]),
+                "message_stats": message_info,
                 "signals": {
                     "low_trust": sig_low_trust,
                     "high_drift": sig_high_drift,
                     "high_peer_dev": sig_high_pdev,
+                    "message_far_from_peers": sig_message_far,
                 },
             })
 
@@ -1027,133 +1082,82 @@ class DecentralisedSimulator:
     def _verification_phase2(self, node_idx, S, R, theta_agg, acc_agg,
                               z_scores, drifts, peer_devs, original_states, round_num, pre_agg_state=None):
         """
-        Step 2: Rescue honest nodes wrongly excluded by aggregation filter.
-        Modifies S and R in-place. Returns: boolean — whether any nodes were rescued.
+        Phase 2: rescue previously rejected neighbours when their message looks benign
+        and adding them back does not materially hurt validation accuracy.
         """
-        eps = self.config.verification_epsilon
-        z_high = self.config.z_high
-
-        # Pre-filter: only evaluate nodes that aren't clearly anomalous
-        candidates = [
-            k for k in R
-            if abs(z_scores[k]) < z_high
-            and not self._permanently_rescued[k]
-        ]
-
-        if not candidates:
-            return False
-
-
         if acc_agg < self._PHASE2_MIN_ACCURACY:
             return False
 
-        # Compute median peer deviation for signal 2
-        sorted_pdevs = sorted(peer_devs)
-        median_peer_dev = float(sorted_pdevs[len(sorted_pdevs) // 2])
+        eps = self.config.verification_epsilon
+        msg_stats = self._build_message_stats(node_idx, S, R, pre_agg_state, original_states)
+        if not msg_stats:
+            return False
 
-        # Compute drift threshold for signal 3
-        mu_drift = sum(drifts) / len(drifts)
-        variance = sum((d - mu_drift) ** 2 for d in drifts) / len(drifts)
-        sigma_drift = variance ** 0.5
+        sorted_pdevs = sorted(peer_devs)
+        median_peer_dev = float(sorted_pdevs[len(sorted_pdevs) // 2]) if sorted_pdevs else 0.0
+        mu_drift = float(np.mean(drifts)) if drifts else 0.0
+        sigma_drift = float(np.std(drifts)) if drifts else 0.0
 
         changed = False
+        for k in list(R):
+            message_info = msg_stats.get(k)
+            if not message_info:
+                continue
 
-        for k in candidates:
-            signals = 0
+            sig_trust_ok = self._trust_scores[k] >= 0.4
+            sig_pdev_ok = peer_devs[k] <= median_peer_dev if peer_devs else True
+            sig_drift_ok = drifts[k] <= mu_drift + 1.0 * sigma_drift if drifts else True
+            sig_message_ok = abs(message_info["z_score"]) < self.config.z_high
 
-            # Signal 1: Trust score — must be above initialisation value so nodes
-            
-            sig_trust_ok = self._trust_scores[k] >= 0.6
-            if sig_trust_ok:
-                signals += 1
-
-            # Signal 2: Peer deviation — not an outlier among peers
-            sig_pdev_ok = peer_devs[k] <= median_peer_dev
-            if sig_pdev_ok:
-                signals += 1
-
-            # Signal 3: Drift — within expected range
-            sig_drift_ok = drifts[k] <= mu_drift + 1.5 * sigma_drift
-            if sig_drift_ok:
-                signals += 1
-
-            # Signal 4: Performance 
-            S_with_k = S + [k]
-            models_with_k = [self._get_neighbor_model(node_idx, j, original_states) for j in S_with_k]
+            s_with_k = S + [k]
+            models_with_k = [self._get_neighbor_model(node_idx, j, original_states) for j in s_with_k]
             theta_with_k = self._re_aggregate(node_idx, models_with_k, pre_agg_state)
             acc_with_k = self._evaluate_model(node_idx, theta_with_k)
             sig_perf_ok = acc_with_k >= acc_agg - eps
-            if sig_perf_ok:
-                signals += 1
 
-            # Rescue rule: ≥3 of 4 signals
-            if signals >= 3:
+            signals = sum([sig_trust_ok, sig_pdev_ok, sig_drift_ok, sig_message_ok, sig_perf_ok])
+            if signals >= 4 and sig_perf_ok:
                 R.remove(k)
-                S.append(k)
+                if k not in S:
+                    S.append(k)
                 old_trust = self._trust_scores[k]
                 self._trust_scores[k] = min(1.0, self._trust_scores[k] + self.config.trust_boost)
-                self._rescue_counts[k] += 1
+                self._verification_suspicion_counts[(node_idx, k)] = 0
                 changed = True
-
                 self._verification_flags.append({
                     "node_id": k,
+                    "target_node": node_idx,
                     "phase": 2,
                     "action": "rescued",
                     "delta_perf": float(acc_with_k - acc_agg),
                     "trust_before": float(old_trust),
                     "trust_after": float(self._trust_scores[k]),
+                    "message_stats": message_info,
                     "signals": {
                         "trust_ok": sig_trust_ok,
                         "peer_dev_ok": sig_pdev_ok,
                         "drift_ok": sig_drift_ok,
+                        "message_ok": sig_message_ok,
                         "performance_ok": sig_perf_ok,
                     },
                 })
-
         return changed
 
     def _verification_phase4(self, round_num, z_scores):
-        
-        #Step 4: Update trust scores for all nodes not already modified by
-        #Step 1/2. Handle automatic rescue promotion and revocation.
-        
+        """Update node trust using conservative round-level anomaly evidence."""
         beta = self.config.trust_decay
-        z_high = self.config.z_high
-        r_revoke = self.config.rescue_revocation_rounds
+        modified_nodes = {
+            flag["node_id"]
+            for flag in self._verification_flags
+            if flag.get("action") in ("flagged", "rescued")
+        }
 
-        # Collect node IDs already modified by step 1 and 2 this round
-        modified_nodes = set()
-        for flag in self._verification_flags:
-            if flag.get("action") in ("flagged", "rescued"):
-                modified_nodes.add(flag["node_id"])
-
-        # Update trust for non-modified nodes
         for i in range(self.config.num_nodes):
-            if i not in modified_nodes:
-                was_flagged = abs(z_scores[i]) > 2.0  # threshold
-                self._trust_scores[i] = (
-                    beta * self._trust_scores[i]
-                    + (1 - beta) * (0.0 if was_flagged else 1.0)
-                )
-
-        # Automatic rescue promotion
-        for i in range(self.config.num_nodes):
-            promotion_threshold = max(self._MIN_RESCUES_FOR_PROMOTION, -(-round_num // 2))  # max(min, ceil(round_num/2))
-            if self._rescue_counts[i] >= promotion_threshold and not self._permanently_rescued[i]:
-                self._permanently_rescued[i] = True
-
-        # Revocation check for permanently rescued nodes
-        for i in range(self.config.num_nodes):
-            if self._permanently_rescued[i]:
-                if abs(z_scores[i]) > z_high:
-                    self._consecutive_anomalous[i] += 1
-                else:
-                    self._consecutive_anomalous[i] = 0
-
-                if self._consecutive_anomalous[i] >= r_revoke:
-                    self._permanently_rescued[i] = False
-                    self._rescue_counts[i] = 0
-                    self._consecutive_anomalous[i] = 0
+            if i in modified_nodes:
+                continue
+            was_flagged = abs(z_scores[i]) > self.config.z_high
+            target = 0.0 if was_flagged else 1.0
+            self._trust_scores[i] = beta * self._trust_scores[i] + (1 - beta) * target
 
     def _run_verification(self, round_num, all_states, drifts, peer_devs, z_scores, pre_agg_states):
         """
@@ -1183,13 +1187,7 @@ class DecentralisedSimulator:
 
         for node_idx in range(self.config.num_nodes):
             S = list(self._round_accepted[node_idx])  # copy — will be modified
-            R = list(self._round_rejected[node_idx])   # copy
-
-            # Auto-include permanently rescued nodes that appear in R
-            for pr_node in list(R):
-                if self._permanently_rescued[pr_node]:
-                    R.remove(pr_node)
-                    S.append(pr_node)
+            R = list(self._round_rejected[node_idx])  # copy
 
             if not R and not S:
                 continue  # nothing to verify
@@ -1234,7 +1232,7 @@ class DecentralisedSimulator:
             self.nodes[idx].set_model_state(state)
             all_states[idx] = state
 
-        #PHASE 4: Trust updates and promotion
+        # Phase 4: trust updates
         self._verification_phase4(round_num, z_scores)
 
         return any_changed
@@ -1330,11 +1328,9 @@ class DecentralisedSimulator:
                 sum(1 for vf in rflags if vf["action"] == "rescued")
                 for rflags in self._verification_flags_per_round
             )
-            perm_rescued = [i for i, p in enumerate(self._permanently_rescued) if p]
             print(f"\nVerification Layer:")
             print(f"  Phase 1 flags (total): {total_p1}")
             print(f"  Phase 2 rescues (total): {total_p2}")
-            print(f"  Permanently rescued nodes: {perm_rescued}")
             print(f"  Final trust scores: {[round(t, 3) for t in self._trust_scores]}")
     
     def save_results(self, filepath: str):
@@ -1389,7 +1385,6 @@ class DecentralisedSimulator:
                 row["verification_time"] = self._verification_time_per_round[adv_idx] if adv_idx < len(self._verification_time_per_round) else 0.0
                 row["nodes_flagged_phase1"] = sum(1 for vf in vflags if vf.get("action") == "flagged")
                 row["nodes_rescued_phase2"] = sum(1 for vf in vflags if vf.get("action") == "rescued")
-                row["permanently_rescued"] = [i for i, p in enumerate(self._permanently_rescued) if p]
             round_results.append(row)
 
         final_accs = self.results["accuracies"][-1]
@@ -1447,7 +1442,6 @@ class DecentralisedSimulator:
                     sum(1 for vf in rflags if vf.get("action") == "rescued")
                     for rflags in self._verification_flags_per_round
                 ),
-                "permanently_rescued_nodes": [i for i, p in enumerate(self._permanently_rescued) if p],
                 "final_trust_scores": [round(t, 6) for t in self._trust_scores],
             } if self.config.verification_enabled and self.config.aggregation != "fedavg" else None,
         }
@@ -1577,22 +1571,22 @@ def main():
                         help="Enable post-acceptance verification layer (default: enabled)")
     parser.add_argument("--no-verification", dest="verification", action="store_false",
                         help="Disable post-acceptance verification layer")
-    parser.add_argument("--verification-epsilon", type=float, default=0.01,
-                        help="Performance threshold (accuracy delta) for verification")
+    parser.add_argument("--verification-epsilon", type=float, default=0.05,
+                        help="Minimum validation improvement required before flagging/removing a peer")
     parser.add_argument("--trust-decay", type=float, default=0.9,
                         help="Exponential decay for trust score")
     parser.add_argument("--trust-initial", type=float, default=0.5,
                         help="Starting trust for all nodes")
     parser.add_argument("--trust-penalty", type=float, default=0.3,
                         help="Trust reduction on confirmed flag")
-    parser.add_argument("--trust-boost", type=float, default=0.1,
+    parser.add_argument("--trust-boost", type=float, default=0.05,
                         help="Trust increase on rescue")
-    parser.add_argument("--z-low", type=float, default=1.0,
-                        help="Lower bound for ambiguous z-score range")
-    parser.add_argument("--z-high", type=float, default=3.0,
-                        help="Upper bound for ambiguous z-score range")
-    parser.add_argument("--verification-history-window", type=int, default=5,
-                        help="Rounds of history for consistency checks")
+    parser.add_argument("--z-low", type=float, default=1.5,
+                        help="Lower bound for ambiguous message z-score range")
+    parser.add_argument("--z-high", type=float, default=2.5,
+                        help="Upper bound for ambiguous message z-score range")
+    parser.add_argument("--verification-history-window", type=int, default=10,
+                        help="Rounds of history for conservative verification checks")
     parser.add_argument("--rescue-revocation-rounds", type=int, default=3,
                         help="Consecutive anomalous rounds to revoke rescue")
 

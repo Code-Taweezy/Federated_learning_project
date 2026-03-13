@@ -16,7 +16,7 @@ Thread-safety: worker -> GUI via a Queue, drained every 80 ms.
 
 import queue
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 # Design tokens  
@@ -686,10 +686,15 @@ class ResultsDashboard:
                         text='  All experiments complete', fg=GREEN)
                     self._ts_lbl.config(
                         text=f"Finished  "
-                             f"{datetime.now().strftime('%Y-%m-%d  %H:%M:%S')}")
+                             f"{datetime.now().strftime('%Y-%m-%d  %H:%M:%S')}") 
                     self._set_progress(1.0)
         except queue.Empty:
             pass
+        except Exception as e:
+            # Handle unexpected errors to prevent GUI crash
+            import traceback
+            print(f"Dashboard queue error: {e}")
+            traceback.print_exc()
         if self._root:
             self._root.after(80, self._drain_queue)
 
