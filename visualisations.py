@@ -476,7 +476,7 @@ def compare_experiments(results_files: Dict[str, str], output_dir: str):
 
 
 
-# ── Main Execution ───────────────────────────────────────────────
+# Main execution entry point
 
 
 if __name__ == "__main__":

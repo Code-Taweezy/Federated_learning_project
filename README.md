@@ -1,8 +1,8 @@
->**Research Question:** How can post-acceptance attacks be efficiently detected in decentralised federated learning? 
+>**Research Question:** How can post-acceptance attacks be efficiently detected in decentralised federated learning?
 
-**This project is under active development as part of an ongoing research project** 
+**This project is under active development as part of an ongoing research project**
 
-## Overview 
+## Overview
 
 This repository contains the experimental infrastructure for evaluating decentralised federated learning (DFL) defenses under adversarial (Byzantine) conditions. The simulator models honest and malicious client interactions across configurable network topologies, attack strategies, defense mechanisms, and datasets — enabling systematic, reproducible evaluation of robustness, detection effectiveness, and computational efficiency.
 
@@ -10,7 +10,7 @@ The purpose of this simulation is to establish baseline performance data for exi
 
 ## Features
 
-### Configurable DFL Simulator 
+### Configurable DFL Simulator
 
 - **Datasets:** FEMNIST and Shakespeare (via [LEAF](https://github.com/TalwalkarLab/leaf)) benchmarks
 
@@ -18,9 +18,14 @@ The purpose of this simulation is to establish baseline performance data for exi
   - `FedAvg` — Baseline federated averaging
   - `BALANCE` — Distance-threshold filtering with weighted aggregation
   - `UBAR` — Two-stage Byzantine-robust aggregation
+  - `Krum` / `Multi-Krum` — Selects the update(s) nearest to the neighbourhood
+  - `Trimmed Mean` — Coordinate-wise trimmed mean
+  - `Coordinate Median` — Coordinate-wise median (50% breakdown point)
 - **Attack Types:**
   - `Directed` — Deviates model parameters in the opposite direction of the honest average
   - `Gaussian` — Replaces model parameters with scaled Gaussian noise
+  - `Label Flip` — Reverses classifier-head weights to simulate label permutation
+  - `ALIE` ("A Little Is Enough") — Perturbs parameters just within statistical tolerance to evade distance-based filters
 - **Network Topologies:** Ring, Fully Connected, K-Regular
 - **Attack Ratio:** Configurable from 0.0 to 0.5 (proportion of compromised nodes)
 - Supports both **CLI arguments** and an **interactive configuration mode**
@@ -38,12 +43,15 @@ The dashboard also allows users to modify experiment parameters between runs wit
 
 Experimental results are logged in real time to Google Sheets via the Google Cloud API (`sheets_exporter.py`), recording:
 - Compute time
-- Final model accuracySS
+- Final model accuracy
 - Honest nodes accepted
 - Compromised nodes accepted
 - Attack impact (relative to 0.0 attack baseline)
 
 ### My proposed verification layer
+
+See [`docs/threat_model.md`](docs/threat_model.md) for the formal threat model,
+adversary assumptions, and defense scope.
 
 ## Getting Started
 
@@ -53,13 +61,13 @@ Experimental results are logged in real time to Google Sheets via the Google Clo
 - [PyTorch](https://pytorch.org/) 2.0+
 - (Optional) CUDA-compatible GPU for accelerated training
   
-### Installations 
+### Installation
 ```bash
 pip install -r requirements.txt
 ```
 
-### Running Automated experiments 
-To execute the full experiment suite: 
+### Running Automated Experiments
+To execute the full experiment suite:
 ```bash
 python run_experiments.py
 ```
