@@ -1,6 +1,6 @@
 """Decentralised federated learning simulator.
 
-This is the main orchestrator that ties together the network topology,
+This is the main file that ties together the network topology,
 nodes, attacks, aggregation algorithms, verification layer, and metrics
 tracking. It coordinates the training loop and produces results.
 """

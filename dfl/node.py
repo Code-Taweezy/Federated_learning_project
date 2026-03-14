@@ -1,4 +1,4 @@
-"""Federated node: a single participant in the decentralised network."""
+"""Federated node (definition): a single participant in the decentralised network."""
 
 from typing import Dict, Tuple
 
