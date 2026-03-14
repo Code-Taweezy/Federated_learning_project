@@ -75,82 +75,10 @@ class Experiment:
         return cmd
 
 
-# Experiment Suites 
+# Experiment Suites
 
 
-# Suite 1: Baseline (Quick Test)
-BASELINE_SUITE = [
-    Experiment('baseline_no_attack', 
-               aggregation='fedavg', 
-               attack_ratio=0.0, 
-               rounds=50),
-    
-    Experiment('baseline_with_attack', 
-               aggregation='fedavg', 
-               attack_ratio=0.25, 
-               rounds=50),
-]
-
-# Suite 2: Algorithm Comparison (Main Test)
-ALGORITHM_SUITE = [
-    Experiment('fedavg', 
-               aggregation='fedavg', 
-               attack_ratio=0.25,
-               rounds=50),
-    
-    Experiment('balance', 
-               aggregation='balance', 
-               attack_ratio=0.25,
-               rounds=50),
-    
-    Experiment('ubar', 
-               aggregation='ubar', 
-               attack_ratio=0.25,
-               rounds=50),
-]
-
-# Suite 3: Topology Comparison (30-45 min)
-TOPOLOGY_SUITE = [
-    Experiment('ring', 
-               topology='ring', 
-               aggregation='balance', 
-               attack_ratio=0.25),
-    
-    Experiment('k_regular', 
-               topology='k-regular', 
-               aggregation='balance', 
-               attack_ratio=0.25,
-               k=4),
-    
-    Experiment('fully', 
-               topology='fully', 
-               aggregation='balance', 
-               attack_ratio=0.25,
-               num_nodes=6),
-]
-
-# Suite 4: Quick Debug (2-3 min)
-DEBUG_SUITE = [
-    Experiment('quick_test', 
-               num_nodes=4, 
-               rounds=3, 
-               aggregation='fedavg'),
-]
-
-# Suite 5: Shakespeare Dataset - Algorithm Comparison
-SHAKESPEARE_SUITE = [
-    Experiment('shakespeare_fedavg',
-               dataset='shakespeare', aggregation='fedavg',
-               attack_ratio=0.25, rounds=50),
-    Experiment('shakespeare_balance',
-               dataset='shakespeare', aggregation='balance',
-               attack_ratio=0.25, rounds=50),
-    Experiment('shakespeare_ubar',
-               dataset='shakespeare', aggregation='ubar',
-               attack_ratio=0.25, rounds=50),
-]
-
-# Suite 6: Cross-Dataset Comparison  – built dynamically (see _build_cross_dataset_suite)
+# Suite 1: Cross-Dataset Comparison  – built dynamically (see _build_cross_dataset_suite)
 def _build_cross_dataset_suite(attack_ratio: float = 0.25,
                                attack_type: str = 'directed',
                                topology: str = 'ring') -> List[Experiment]:
@@ -172,15 +100,16 @@ def _build_cross_dataset_suite(attack_ratio: float = 0.25,
     return experiments
 
 
-# Suite 7: Verification Layer comparison(refer to _build_verification_suite)
+# Suite 2: Verification Layer comparison (refer to _build_verification_suite)
 def _build_verification_suite(attack_ratio: float = 0.25,
                               attack_type: str = 'directed',
                               topology: str = 'ring') -> List[Experiment]:
-    # Runs datasets using BALANCE and UBAR with/without verification layer ( 8 experiments)
+    # Runs datasets using all 7 aggregators with/without verification layer (28 experiments)
     datasets = ['femnist', 'shakespeare']
+    aggregators = ['fedavg', 'balance', 'ubar', 'krum', 'multikrum', 'trimmed_mean', 'median']
     experiments = []
     for ds in datasets:
-        for agg in ['balance', 'ubar']:
+        for agg in aggregators:
             for ver_flag, tag in [(True, 'with_verification'),
                                   (False, 'no_verification')]:
                 experiments.append(Experiment(
@@ -271,8 +200,8 @@ class ExperimentRunner:
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,   # FIX: capture stderr separately so crash tracebacks
-                text=True,                #      are always visible, not silently merged/dropped
+                stderr=subprocess.PIPE,   
+                text=True,                
                 bufsize=1,
             )
 
@@ -440,64 +369,75 @@ def print_menu():
     """Print experiment suite menu."""
     print("\nFEDERATED LEARNING EXPERIMENT RUNNER")
     print("\nAvailable Experiment Suites:\n")
-    print("  1. BASELINE SUITE")
-    print("     - 2 experiments (32 nodes, 50 rounds)")
-    print("     - FedAvg no-attack vs directed-attack baseline\n")
-    print("  2. ALGORITHM COMPARISON")
-    print("     - 3 experiments (32 nodes, 50 rounds)")
-    print("     - FedAvg vs BALANCE vs UBAR  (FEMNIST)\n")
-    print("  3. TOPOLOGY COMPARISON")
-    print("     - 3 experiments (32 nodes, 50 rounds)")
-    print("     - Ring vs k-regular vs fully-connected\n")
-    print("  4. SHAKESPEARE DATASET")
-    print("     - 4 experiments (32 nodes, 50 rounds)")
-    print("     - Algorithm comparison on Shakespeare (character-level LSTM)\n")
-    print("  5. CROSS-DATASET COMPARISON")
+    print("  1. CROSS-DATASET COMPARISON")
     print("     - 6 experiments (32 nodes, 50 rounds)")
     print("     - FedAvg / BALANCE / UBAR across FEMNIST and Shakespeare")
     print("     - Configurable attack ratio + attack type (dialog shown before launch)\n")
-    print("  6. VERIFICATION ABLATION")
-    print("     - runs 8 experiments (32 nodes, 50 rounds)")
-    print("     - BALANCE and UBAR with and without verification layer across FEMNIST and Shakespeare\n")
-    print("  7. CUSTOM (define your own)\n")
+    print("  2. VERIFICATION LAYER")
+    print("     - 28 experiments (32 nodes, 50 rounds)")
+    print("     - All 7 aggregators with and without verification layer across FEMNIST and Shakespeare")
+    print("     - Configurable attack ratio + attack type (dialog shown before launch)\n")
+    print("  3. INTERACTIVE SIMULATION")
+    print("     - Configure and run a single experiment with each individual parameter (dataset, aggregator, topology, attack) selectable via prompts\n")
     print("  0. Exit\n")
 
-# Option 7 allows for custom experiment configuration (terminal prompts)
-def run_custom_suite():
-    #Run custom experiments.
-    print("\n Custom Experiment Configuration")
-    
-    experiments = []
-    
-    while True:
-        print(f"\nCurrent experiments: {len(experiments)}")
-        
-        name = input("Experiment name (or 'done' to finish): ").strip()
-        if name.lower() == 'done':
-            break
-        
-        print("\nAggregation: 1=FedAvg, 2=BALANCE, 3=UBAR")
-        agg_choice = input("Choose (1-3): ").strip()
-        agg_map = {'1': 'fedavg', '2': 'balance', '3': 'ubar'}
-        aggregation = agg_map.get(agg_choice, 'fedavg')
-        
-        print("\nTopology: 1=Ring, 2=k-Regular, 3=Fully")
-        topo_choice = input("Choose (1-3) [default 1]: ").strip()
-        topo_map = {'1': 'ring', '2': 'k-regular', '3': 'fully'}
-        topology = topo_map.get(topo_choice, 'ring')
+# Option 3 lets the user configure a single experiment interactively,
+# then runs it through the ExperimentRunner with the results dashboard.
+def run_interactive_sim():
+    #Prompt for experiment parameters and run with the results dashboard.
+    print("\nLaunch interactive mode\n")
 
-        attack_ratio = float(input("Attack ratio (0.0-0.5): ").strip() or "0.25")
-        rounds = int(input("Number of rounds (default 50): ").strip() or "50")
+    datasets = ['femnist', 'shakespeare']
+    aggregators = ['fedavg', 'balance', 'ubar', 'krum', 'multikrum', 'trimmed_mean', 'median']
+    topologies = ['ring', 'k-regular', 'fully']
 
-        exp = Experiment(name,
-                        aggregation=aggregation,
-                        topology=topology,
-                        attack_ratio=attack_ratio,
-                        rounds=rounds)
-        experiments.append(exp)
-        print(f" Added: {name}")
-    
-    return experiments
+    print("Dataset:")
+    for i, d in enumerate(datasets, 1):
+        print(f"  {i}. {d}")
+    ds_idx = int(input(f"Choose dataset (1-{len(datasets)}) [default 1]: ").strip() or "1") - 1
+    dataset = datasets[max(0, min(ds_idx, len(datasets) - 1))]
+
+    print("\nAggregation algorithm:")
+    for i, a in enumerate(aggregators, 1):
+        print(f"  {i}. {a}")
+    ag_idx = int(input(f"Choose aggregator (1-{len(aggregators)}) [default 1]: ").strip() or "1") - 1
+    aggregation = aggregators[max(0, min(ag_idx, len(aggregators) - 1))]
+
+    print("\nTopology:")
+    for i, t in enumerate(topologies, 1):
+        print(f"  {i}. {t}")
+    tp_idx = int(input(f"Choose topology (1-{len(topologies)}) [default 1]: ").strip() or "1") - 1
+    topology = topologies[max(0, min(tp_idx, len(topologies) - 1))]
+
+    num_nodes = int(input("Number of nodes        [default 32]: ").strip() or "32")
+    num_rounds = int(input("Number of rounds       [default 50]: ").strip() or "50")
+    attack_ratio = float(input("Attack ratio 0.0-0.5   [default 0.0]: ").strip() or "0.0")
+    attack_ratio = max(0.0, min(0.5, attack_ratio))
+
+    attack_type = 'directed'
+    if attack_ratio > 0:
+        atype = input("Attack type – directed / gaussian [default directed]: ").strip() or "directed"
+        attack_type = atype if atype in ('directed', 'gaussian') else 'directed'
+
+    name = f'{dataset}_{aggregation}'
+
+    print(
+        f"\nConfiguration: {dataset} | {aggregation} | {topology} | "
+        f"{num_nodes} nodes | {num_rounds} rounds | attack={attack_ratio} ({attack_type})\n"
+    )
+
+    exp = Experiment(
+        name,
+        dataset=dataset,
+        aggregation=aggregation,
+        topology=topology,
+        num_nodes=num_nodes,
+        rounds=num_rounds,
+        attack_ratio=attack_ratio,
+        attack_type=attack_type,
+    )
+
+    _run_suite('interactive', [exp])
 
 
 def _configure_suite(suite_label: str = 'Cross-Dataset') -> dict:
@@ -710,20 +650,12 @@ def main():
     """Main execution."""
     while True:
         print_menu()
-        choice = input("Select suite (0-7): ").strip()
+        choice = input("Select suite (0-3): ").strip()
 
         if choice == '0':
             print("\nGoodbye!\n")
             break
         elif choice == '1':
-            _run_suite('baseline', BASELINE_SUITE)
-        elif choice == '2':
-            _run_suite('algorithm_comparison', ALGORITHM_SUITE)
-        elif choice == '3':
-            _run_suite('topology_comparison', TOPOLOGY_SUITE)
-        elif choice == '4':
-            _run_suite('shakespeare_comparison', SHAKESPEARE_SUITE)
-        elif choice == '5':
             cfg = _configure_suite('Cross-Dataset')
             if cfg:
                 exps = _build_cross_dataset_suite(
@@ -732,21 +664,17 @@ def main():
                     topology=cfg.get('topology', 'ring'),
                 )
                 _run_suite('cross_dataset', exps)
-        elif choice == '6':
-            cfg = _configure_suite('Verification Ablation')
+        elif choice == '2':
+            cfg = _configure_suite('Verification Layer')
             if cfg:
                 exps = _build_verification_suite(
                     attack_ratio=cfg['attack_ratio'],
                     attack_type=cfg['attack_type'],
                     topology=cfg.get('topology', 'ring'),
                 )
-                _run_suite('verification_ablation', exps)
-                
-        elif choice == '7':
-            custom_exps = run_custom_suite()
-            if custom_exps:
-                _run_suite('custom', custom_exps)
-        
+                _run_suite('verification_layer', exps)
+        elif choice == '3':
+            run_interactive_sim()
         else:
             print("Invalid choice.")
 

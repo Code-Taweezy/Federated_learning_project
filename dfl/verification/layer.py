@@ -59,7 +59,7 @@ from dfl.verification.trust import TrustManager
 
 @dataclass
 class RoundContext:
-    """All the data the verification layer needs from a single round."""
+    #All the data the verification layer needs from a single round.
 
     round_num: int
     current_states: List[Dict[str, torch.Tensor]]

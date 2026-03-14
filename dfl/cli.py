@@ -1,65 +1,15 @@
-"""Command-line interface and interactive configuration for the simulator."""
+"""Command-line interface for the simulator."""
 
 import argparse
 import os
-from datetime import datetime as _dt
 
 from dfl.config import SimulationConfig, VALID_ATTACK_TYPES, VALID_AGGREGATIONS
 from dfl.simulator import DecentralisedSimulator
 
 
-# Choices exposed in the interactive menu
 DATASETS = ["femnist", "shakespeare"]
 AGGREGATORS = list(VALID_AGGREGATIONS)
 TOPOLOGIES = ["ring", "fully", "k-regular"]
-
-
-def _interactive_config() -> dict:
-    """Prompt the user for experiment settings when running interactively."""
-    print("\nDecentralised FL Simulator - Interactive Setup\n")
-
-    print("Dataset:")
-    for i, d in enumerate(DATASETS, 1):
-        print(f"  {i}. {d}")
-    ds_idx = int(input(f"Choose dataset (1-{len(DATASETS)}) [default 1]: ").strip() or "1") - 1
-    dataset = DATASETS[max(0, min(ds_idx, len(DATASETS) - 1))]
-
-    print("\nAggregation algorithm:")
-    for i, a in enumerate(AGGREGATORS, 1):
-        print(f"  {i}. {a}")
-    ag_idx = int(
-        input(f"Choose aggregator (1-{len(AGGREGATORS)}) [default 1]: ").strip() or "1"
-    ) - 1
-    aggregation = AGGREGATORS[max(0, min(ag_idx, len(AGGREGATORS) - 1))]
-
-    print("\nTopology:")
-    for i, t in enumerate(TOPOLOGIES, 1):
-        print(f"  {i}. {t}")
-    tp_idx = int(input("Choose topology (1-3) [default 1]: ").strip() or "1") - 1
-    topology = TOPOLOGIES[max(0, min(tp_idx, len(TOPOLOGIES) - 1))]
-
-    num_nodes = int(input("Number of nodes        [default 32]: ").strip() or "32")
-    num_rounds = int(input("Number of rounds       [default 50]: ").strip() or "50")
-    attack_ratio = float(input("Attack ratio 0.0-0.5   [default 0.0]:  ").strip() or "0.0")
-
-    ts = _dt.now().strftime("%Y%m%d_%H%M%S")
-    os.makedirs("results", exist_ok=True)
-    output = f"results/{dataset}_{aggregation}_{ts}.json"
-
-    print(
-        f"\nConfiguration: {dataset} | {aggregation} | {topology} | "
-        f"{num_nodes} nodes | {num_rounds} rounds | attack={attack_ratio}"
-    )
-    print(f"Output: {output}\n")
-    return dict(
-        dataset=dataset,
-        aggregation=aggregation,
-        topology=topology,
-        num_nodes=num_nodes,
-        num_rounds=num_rounds,
-        attack_ratio=attack_ratio,
-        output=output,
-    )
 
 
 def main():
@@ -67,7 +17,7 @@ def main():
     parser = argparse.ArgumentParser(description="Decentralised FL Simulator")
 
     # Basic parameters
-    parser.add_argument("--dataset", type=str, default=None, choices=DATASETS)
+    parser.add_argument("--dataset", type=str, default="femnist", choices=DATASETS)
     parser.add_argument("--num-nodes", type=int, default=32)
     parser.add_argument("--rounds", type=int, default=50)
     parser.add_argument("--local-epochs", type=int, default=1)
@@ -161,18 +111,13 @@ def main():
 
     args = parser.parse_args()
 
-    # Interactive mode when run without --dataset
-    _interactive = {}
-    if args.dataset is None:
-        _interactive = _interactive_config()
-
-    dataset = _interactive.get("dataset", args.dataset or "femnist")
-    aggregation = _interactive.get("aggregation", args.aggregation)
-    topology = _interactive.get("topology", args.topology)
-    num_nodes = _interactive.get("num_nodes", args.num_nodes)
-    num_rounds = _interactive.get("num_rounds", args.rounds)
-    attack_ratio = _interactive.get("attack_ratio", args.attack_ratio)
-    output_path = _interactive.get("output", args.output)
+    dataset = args.dataset
+    aggregation = args.aggregation
+    topology = args.topology
+    num_nodes = args.num_nodes
+    num_rounds = args.rounds
+    attack_ratio = args.attack_ratio
+    output_path = args.output
 
     # Parse multi-seed mode
     seeds = [args.seed]
