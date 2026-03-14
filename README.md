@@ -28,7 +28,8 @@ The purpose of this simulation is to establish baseline performance data for exi
   - `ALIE` ("A Little Is Enough") — Perturbs parameters just within statistical tolerance to evade distance-based filters
 - **Network Topologies:** Ring, Fully Connected, K-Regular
 - **Attack Ratio:** Configurable from 0.0 to 0.5 (proportion of compromised nodes)
-- Supports both **CLI arguments** and an **interactive configuration mode**
+- Supports both **CLI arguments** and an **interactive configuration mode** (running individual tests on one dataset)
+
 
 ### Live Dashboard
 
