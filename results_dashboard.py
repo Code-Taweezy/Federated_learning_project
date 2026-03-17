@@ -1,15 +1,15 @@
 """
 Federated Learning Live Results Dashboard
 Features:
-    [Live Charts] 
+    Live Charts
             accuracy + loss line graphs that update in real-time per round
             click any legend swatch to show/hide a series across all graphs
-    [Round Table]  
+    Round Table:
             shows per-round metrics for the selected experiment, updated live after each experiment
-    [Summary]      
+    Summary:  
             final-results table + comparison bar charts
 
-    [Advanced Metrics] 
+    [Advanced Metric
 
 Thread-safety: worker -> GUI via a Queue, drained every 80 ms.
 """
@@ -138,6 +138,7 @@ class ResultsDashboard:
 
         self._tk   = tk
         self._ttk  = ttk
+        self._closed = False
         # Enable DPI awareness for sharp text on high-DPI displays
         try:
             from ctypes import windll
@@ -145,6 +146,7 @@ class ResultsDashboard:
         except Exception:
             pass
         self._root = tk.Tk()
+        self._root.protocol("WM_DELETE_WINDOW", self._on_close)
         try:
             self._build_gui()
         except Exception as e:
@@ -155,6 +157,11 @@ class ResultsDashboard:
             return
         self._root.after(80, self._drain_queue)
         self._root.mainloop()
+
+    def _on_close(self):
+        """Handle window close: stop the polling loop, then destroy."""
+        self._closed = True
+        self._root.destroy()
 
     # GUI
     def _build_gui(self):
@@ -613,6 +620,8 @@ class ResultsDashboard:
 
     # Draining the Queue once the program is closed
     def _drain_queue(self):
+        if self._closed:
+            return
         try:
             while True:
                 msg   = self._q.get_nowait()
@@ -695,7 +704,7 @@ class ResultsDashboard:
             import traceback
             print(f"Dashboard queue error: {e}")
             traceback.print_exc()
-        if self._root:
+        if not self._closed:
             self._root.after(80, self._drain_queue)
 
     # Progress bar

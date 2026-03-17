@@ -67,7 +67,7 @@ class DecentralisedSimulator:
         self._previous_states = None
 
         # Initialize verification layer
-        if config.verification_enabled and config.aggregation != "fedavg":
+        if config.verification_enabled:
             self.verification_layer = VerificationLayer(config, self.nodes, self.graph)
         else:
             self.verification_layer = NoOpVerificationLayer(config)
@@ -550,7 +550,7 @@ class DecentralisedSimulator:
             print(f"  Per round: {avg_bytes / 1e6:.2f} MB")
 
         # Verification layer summary
-        if self.config.verification_enabled and self.config.aggregation != "fedavg":
+        if self.config.verification_enabled:
             total_p1 = sum(
                 sum(1 for vf in rflags if vf["action"] == "flagged")
                 for rflags in self._verification_flags_per_round

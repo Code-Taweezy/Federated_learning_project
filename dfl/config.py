@@ -66,8 +66,8 @@ class SimulationConfig:
 
     # Verification layer thresholds (previously hard-coded)
     phase1_trust_threshold: float = 0.35
-    phase1_min_signals: int = 3
-    phase1_consecutive_required: int = 2
+    phase1_min_signals: int = 2
+    phase1_consecutive_required: int = 1
     phase2_trust_threshold: float = 0.4
     phase2_min_accuracy: float = 0.05
     phase2_min_signals: int = 4

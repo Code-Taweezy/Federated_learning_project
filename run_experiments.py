@@ -53,7 +53,7 @@ class Experiment:
         self.extra_args = kwargs.get('extra_args', [])  # list of additional CLI (Command Line Interface) flags
     
     def to_command(self, output_file):
-        """Generate command line arguments."""
+        #Generate command line arguments.
         cmd = [
             sys.executable, 'decentralised_fl_sim.py',
             '--dataset', self.dataset,
@@ -183,7 +183,7 @@ class ExperimentRunner:
         return results_files
     
     def _run_experiment(self, exp: Experiment, output_file: str, dashboard=None) -> bool:
-        """Run a single experiment, streaming output line-by-line."""
+        #Run a single experiment, streaming output line-by-line.
         try:
             start_time = time.time()
 
@@ -290,7 +290,7 @@ class ExperimentRunner:
             return False
     
     def _analyze_individual(self, results_file: str, exp_name: str):
-        """Generate analysis for individual experiment."""
+        #Generate analysis for individual experiment.
         try:
             from visualisations import analyze_experiment
             
@@ -301,7 +301,7 @@ class ExperimentRunner:
             print(f"Could not generate individual analysis: {e}")
     
     def _generate_comparison(self, results_files: Dict[str, str]):
-        """Generate comparison visualizations."""
+        #This code generates comparison visualizations.
         try:
             from visualisations import compare_experiments
             
@@ -314,7 +314,7 @@ class ExperimentRunner:
             print(f" Could not generate comparison: {e}")
     
     def _print_summary(self, results_files: Dict[str, str]):
-        """Print final summary."""
+        #Print final summary.
         print("\nExperiment Suite Summary")
         print(f"Suite: {self.suite_name}")
         print(f"Completed: {len(results_files)}/{len(self.experiments)}")
@@ -379,9 +379,10 @@ def print_menu():
     print("     - Configurable attack ratio + attack type (dialog shown before launch)\n")
     print("  3. INTERACTIVE SIMULATION")
     print("     - Configure and run a single experiment with each individual parameter (dataset, aggregator, topology, attack) selectable via prompts\n")
+    print("     - Note: This is quicker to run for individual tests\n")
     print("  0. Exit\n")
 
-# Option 3 lets the user configure a single experiment interactively,
+# Note: Option 3 lets the user configure a single experiment interactively,
 # then runs it through the ExperimentRunner with the results dashboard.
 def run_interactive_sim():
     #Prompt for experiment parameters and run with the results dashboard.
@@ -416,28 +417,49 @@ def run_interactive_sim():
 
     attack_type = 'directed'
     if attack_ratio > 0:
-        atype = input("Attack type – directed / gaussian [default directed]: ").strip() or "directed"
-        attack_type = atype if atype in ('directed', 'gaussian') else 'directed'
+        attack_types = ['directed', 'gaussian', 'label_flip', 'alie']
+        print("\nAttack type:")
+        for i, at in enumerate(attack_types, 1):
+            print(f"  {i}. {at}")
+        at_idx = int(input(f"Choose attack type (1-{len(attack_types)}) [default 1]: ").strip() or "1") - 1
+        attack_type = attack_types[max(0, min(at_idx, len(attack_types) - 1))]
+
+    ver_input = input("Enable verification layer comparison? y/n [default n]: ").strip().lower()
+    verification_compare = ver_input in ('y', 'yes')
 
     name = f'{dataset}_{aggregation}'
 
     print(
         f"\nConfiguration: {dataset} | {aggregation} | {topology} | "
-        f"{num_nodes} nodes | {num_rounds} rounds | attack={attack_ratio} ({attack_type})\n"
+        f"{num_nodes} nodes | {num_rounds} rounds | attack={attack_ratio} ({attack_type})"
+        f"{' | verification comparison' if verification_compare else ''}\n"
     )
 
-    exp = Experiment(
-        name,
-        dataset=dataset,
-        aggregation=aggregation,
-        topology=topology,
-        num_nodes=num_nodes,
-        rounds=num_rounds,
-        attack_ratio=attack_ratio,
-        attack_type=attack_type,
-    )
+    experiments = []
+    if verification_compare:
+        experiments.append(Experiment(
+            f'{name}_with_verification',
+            dataset=dataset, aggregation=aggregation, topology=topology,
+            num_nodes=num_nodes, rounds=num_rounds,
+            attack_ratio=attack_ratio, attack_type=attack_type,
+            verification=True,
+        ))
+        experiments.append(Experiment(
+            f'{name}_no_verification',
+            dataset=dataset, aggregation=aggregation, topology=topology,
+            num_nodes=num_nodes, rounds=num_rounds,
+            attack_ratio=attack_ratio, attack_type=attack_type,
+            verification=False,
+        ))
+    else:
+        experiments.append(Experiment(
+            name,
+            dataset=dataset, aggregation=aggregation, topology=topology,
+            num_nodes=num_nodes, rounds=num_rounds,
+            attack_ratio=attack_ratio, attack_type=attack_type,
+        ))
 
-    _run_suite('interactive', [exp])
+    _run_suite('interactive', experiments)
 
 
 def _configure_suite(suite_label: str = 'Cross-Dataset') -> dict:
@@ -453,10 +475,12 @@ def _configure_suite(suite_label: str = 'Cross-Dataset') -> dict:
         # Fall back to terminal prompts
         try:
             ratio = float(input("Attack ratio (0.0-0.5) [default 0.25]: ").strip() or "0.25")
-            atype = input("Attack type – directed or gaussian [default directed]: ").strip() or "directed"
+            attack_types = ['directed', 'gaussian', 'label_flip', 'alie']
+            print("Attack types: " + ", ".join(attack_types))
+            atype = input("Attack type [default directed]: ").strip() or "directed"
             topo  = input("Topology – ring / k-regular / fully [default ring]: ").strip() or "ring"
             return {'attack_ratio': max(0.0, min(0.5, ratio)),
-                    'attack_type': atype if atype in ('directed', 'gaussian') else 'directed',
+                    'attack_type': atype if atype in attack_types else 'directed',
                     'topology':    topo  if topo  in ('ring', 'k-regular', 'fully') else 'ring'}
         except Exception:
             return None
@@ -506,7 +530,7 @@ def _configure_suite(suite_label: str = 'Cross-Dataset') -> dict:
     body.pack(fill='both', expand=True, padx=24, pady=18)
 
     def _section_label(text):
-        """Styled section heading matching the dashboard's MUTED caps labels."""
+        #Styled section heading matching the dashboard's MUTED caps labels."""
         tk.Label(body, text=text.upper(),
                  font=(FONT_UI, 9, 'bold'), bg=BG, fg=MUTED
                  ).pack(anchor='w', pady=(14, 4))
@@ -617,7 +641,7 @@ def _configure_suite(suite_label: str = 'Cross-Dataset') -> dict:
 
 
 def _run_suite(suite_name: str, experiments: List[Experiment]):
-    """Launch a suite with the live results dashboard."""
+    #Launch a suite with the live results dashboard."""
     runner = ExperimentRunner(suite_name, experiments)
 
     try:

@@ -31,7 +31,8 @@ Verification hyperparameter rationale:
         it hard for an intermittent attacker to maintain high trust.
 
     z_low (1.5): Lower bound of the ambiguous z-score range. Messages
-        with z-scores below 1.5 sigma are clearly benign and ignored.
+        with z-scores below 1.5 sigma (computed against the population of
+        all edge distances in the round) are clearly benign and ignored.
 
     z_high (2.5): Upper bound. Messages above 2.5 sigma are treated as
         clearly anomalous by the round-level anomaly detector, so the
@@ -41,9 +42,9 @@ Verification hyperparameter rationale:
         model accuracy is essentially random (below 5%), since any
         performance comparison would be unreliable.
 
-    _FLAG_CONSECUTIVE_REQUIRED (2): Require two consecutive suspicious
-        rounds before acting, reducing false positives caused by
-        transient fluctuations.
+    _FLAG_CONSECUTIVE_REQUIRED (2): Default for consecutive suspicious
+        rounds before acting. Can be overridden via config
+        (phase1_consecutive_required).
 """
 
 from dataclasses import dataclass, field
@@ -122,6 +123,11 @@ class VerificationLayer:
 
         Returns True if any model was modified.
         """
+        # Compute population-level distance statistics across all edges
+        self._global_dist_mean, self._global_dist_std = self._build_global_distance_stats(
+            ctx.pre_agg_states, ctx.neighbor_models
+        )
+
         # Update history before running the phases
         self.trust.update_history(ctx.drifts, ctx.peer_devs)
 
@@ -214,7 +220,7 @@ class VerificationLayer:
                 continue
 
             msg_z = abs(message_info["z_score"])
-            if not (self.config.z_low <= msg_z <= self.config.z_high):
+            if msg_z < self.config.z_low:
                 self.trust.suspicion_counts[(node_idx, j)] = 0
                 continue
 
@@ -231,7 +237,6 @@ class VerificationLayer:
             acc_without_j = self._evaluate_model(node_idx, theta_without_j)
             delta_perf = acc_without_j - acc_agg
 
-            sig_low_trust = self.trust.trust_scores[j] < self._phase1_trust_threshold
             sig_high_drift = bool(
                 self.trust.drift_history[j]
                 and (sum(self.trust.drift_history[j]) / len(self.trust.drift_history[j]))
@@ -244,7 +249,7 @@ class VerificationLayer:
             )
             sig_message_far = message_info["peer_distance"] >= message_info["distance_to_own"]
 
-            signals = sum([sig_low_trust, sig_high_drift, sig_high_pdev, sig_message_far])
+            signals = sum([sig_high_drift, sig_high_pdev, sig_message_far])
 
             # Require sustained suspicious behaviour across multiple signals
             suspicious = delta_perf > eps and signals >= self._phase1_min_signals and hist_ready
@@ -260,12 +265,12 @@ class VerificationLayer:
                 continue
 
             nodes_to_flag.append(
-                (j, delta_perf, message_info, sig_low_trust,
+                (j, delta_perf, message_info,
                  sig_high_drift, sig_high_pdev, sig_message_far)
             )
 
         changed = False
-        for (j, delta_perf, message_info, sig_low_trust,
+        for (j, delta_perf, message_info,
              sig_high_drift, sig_high_pdev, sig_message_far) in nodes_to_flag:
             if j not in S:
                 continue
@@ -287,7 +292,6 @@ class VerificationLayer:
                 "trust_after": float(trust_after),
                 "message_stats": message_info,
                 "signals": {
-                    "low_trust": sig_low_trust,
                     "high_drift": sig_high_drift,
                     "high_peer_dev": sig_high_pdev,
                     "message_far_from_peers": sig_message_far,
@@ -412,6 +416,26 @@ class VerificationLayer:
             return [0.0 for _ in values]
         return [float((v - mean_v) / std_v) for v in values]
 
+    def _build_global_distance_stats(self, pre_agg_states, neighbor_models):
+        """Compute mean and std of L2 distances across all edges in the round.
+
+        This provides a population-level baseline so that per-message z-scores
+        are meaningful even when a node has very few neighbours (e.g. ring = 2).
+        """
+        all_distances = []
+        for (receiver, sender), model in neighbor_models.items():
+            d = model_distance(pre_agg_states[receiver], model)
+            all_distances.append(d)
+
+        if len(all_distances) < 2:
+            return 0.0, 1.0
+
+        mean_d = float(np.mean(all_distances))
+        std_d = float(np.std(all_distances))
+        if std_d < 1e-12:
+            std_d = 1.0
+        return mean_d, std_d
+
     def _build_message_stats(self, node_idx, accepted_ids, rejected_ids,
                              pre_agg_state, fallback_states):
         """Build message-level verification features for every neighbour."""
@@ -429,11 +453,12 @@ class VerificationLayer:
             nid: model_distance(pre_agg_state, msg_state)
             for nid, msg_state in messages.items()
         }
-        values = list(distances_to_own.values())
-        z_scores = self._message_z_scores(values)
+        # Use population-level stats for z-scores instead of local stats
+        global_mean = self._global_dist_mean
+        global_std = self._global_dist_std
         z_by_neighbor = {
-            nid: z_scores[idx]
-            for idx, nid in enumerate(distances_to_own.keys())
+            nid: float((dist - global_mean) / global_std)
+            for nid, dist in distances_to_own.items()
         }
 
         stats = {}
