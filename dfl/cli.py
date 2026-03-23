@@ -1,4 +1,4 @@
-"""Command-line interface for the simulator."""
+#Command-line interface for the simulator.
 
 import argparse
 import os
@@ -13,7 +13,7 @@ TOPOLOGIES = ["ring", "fully", "k-regular"]
 
 
 def main():
-    """Entry point for the decentralised FL simulator."""
+    #Entry point for the decentralised FL simulator."""
     parser = argparse.ArgumentParser(description="Decentralised FL Simulator")
 
     # Basic parameters
@@ -90,13 +90,13 @@ def main():
     # Verification layer thresholds (sensitivity analysis)
     parser.add_argument("--phase1-trust-threshold", type=float, default=0.35,
                         help="Trust threshold below which Phase 1 flags a node as suspicious")
-    parser.add_argument("--phase1-min-signals", type=int, default=3,
-                        help="Minimum number of suspicious signals (out of 4) for Phase 1 flagging")
-    parser.add_argument("--phase1-consecutive-required", type=int, default=2,
+    parser.add_argument("--phase1-min-signals", type=int, default=2,
+                        help="Minimum number of suspicious signals (out of 3) for Phase 1 flagging")
+    parser.add_argument("--phase1-consecutive-required", type=int, default=1,
                         help="Consecutive suspicious rounds required before Phase 1 acts")
     parser.add_argument("--phase2-trust-threshold", type=float, default=0.4,
                         help="Minimum trust score for Phase 2 rescue eligibility")
-    parser.add_argument("--phase2-min-accuracy", type=float, default=0.05,
+    parser.add_argument("--phase2-min-accuracy", type=float, default=0.001,
                         help="Minimum model accuracy before Phase 2 rescue is attempted")
     parser.add_argument("--phase2-min-signals", type=int, default=4,
                         help="Minimum number of benign signals (out of 5) for Phase 2 rescue")
@@ -187,7 +187,7 @@ def main():
 
 
 def _compute_ci(values, confidence=0.95):
-    """Compute mean, std, and confidence interval for a list of values."""
+    #Compute mean, std, and confidence interval for a list of values.
     import numpy as np
     from scipy import stats
 

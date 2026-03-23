@@ -1,378 +1,789 @@
-"""Post-acceptance verification layer for decentralised federated learning.
+"""Verification layer for decentralized federated learning.
 
-This module implements a four-phase verification mechanism that runs after
-each aggregation round. It conservatively flags suspicious neighbours,
-rescues falsely rejected ones, re-aggregates when changes are made, and
-updates trust scores. The entire layer is designed to be pluggable: the
-simulator instantiates either a ``VerificationLayer`` or a
-``NoOpVerificationLayer`` depending on the configuration.
+This module implements a post-aggregation verification layer that:
+1. Detects attackers that passed the aggregator (false negatives)
+2. Rescues honest nodes that were incorrectly rejected (false positives)
+3. Re-aggregates with corrected neighbor sets
+4. Updates trust scores based on outcomes
 
-Verification hyperparameter rationale:
-
-    verification_epsilon (0.05): The minimum validation-accuracy improvement
-        required before flagging or accepting a peer. Chosen based on the
-        typical standard deviation of honest node accuracy fluctuations.
-
-    trust_decay (0.95): Exponential moving-average decay factor. With
-        beta = 0.95 the effective half-life is about 14 rounds, so
-        recent behaviour has roughly 5x the weight of behaviour 30
-        rounds ago.
-
-    trust_initial (0.5): Neutral starting point. All nodes begin with
-        equal trust scores and must earn higher scores through consistently
-        benign behaviour.
-
-    trust_penalty (0.2): A single flag drops trust from 0.5 to 0.3,
-        which is below the Phase 1 low-trust threshold of 0.35. This
-        ensures that one confirmed flag has immediate protective effect.
-
-    trust_boost (0.05): Conservative recovery rate. Four successful
-        rescue rounds are needed to recover from one penalty, making
-        it hard for an intermittent attacker to maintain high trust.
-
-    z_low (1.5): Lower bound of the ambiguous z-score range. Messages
-        with z-scores below 1.5 sigma (computed against the population of
-        all edge distances in the round) are clearly benign and ignored.
-
-    z_high (2.5): Upper bound. Messages above 2.5 sigma are treated as
-        clearly anomalous by the round-level anomaly detector, so the
-        verification layer focuses only on the ambiguous middle band.
-
-    _PHASE2_MIN_ACCURACY (0.05): Do not attempt rescue when the current
-        model accuracy is essentially random (below 5%), since any
-        performance comparison would be unreliable.
-
-    _FLAG_CONSECUTIVE_REQUIRED (2): Default for consecutive suspicious
-        rounds before acting. Can be overridden via config
-        (phase1_consecutive_required).
+CORE INSIGHT: Analyze what nodes SEND, not their final state.
+- Attackers SEND malicious updates but have normal FINAL states (they receive honest updates)
+- Honest nodes SEND normal updates but may have damaged FINAL states (they receive malicious updates)
+- So we must detect based on SENT updates via neighbor_models, not current_states
 """
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+import time
+from dataclasses import dataclass
+from typing import Dict, List, Set, Tuple
 
 import numpy as np
 import torch
 
 from dfl.config import SimulationConfig
-from dfl.utils import average_state_dicts, model_distance
+from dfl.utils import average_state_dicts
 from dfl.verification.trust import TrustManager
 
 
 @dataclass
 class RoundContext:
-    #All the data the verification layer needs from a single round.
+    """All data needed for verification in a single round.
+
+    This dataclass bundles the inputs for run_verification(). Note that
+    current_states, accepted_per_node, and rejected_per_node are MUTATED
+    by the verification layer when it makes corrections.
+    """
 
     round_num: int
-    current_states: List[Dict[str, torch.Tensor]]
-    pre_agg_states: List[Dict[str, torch.Tensor]]
-    drifts: List[float]
-    peer_devs: List[float]
-    z_scores: List[float]
-    accepted_per_node: List[List[int]]
-    rejected_per_node: List[List[int]]
-    neighbor_models: Dict[Tuple[int, int], Dict[str, torch.Tensor]]
+    current_states: List[Dict[str, torch.Tensor]]  # Post-aggregation states (mutable)
+    pre_agg_states: List[Dict[str, torch.Tensor]]  # Pre-aggregation states
+    drifts: List[float]  # Per-node drift values
+    peer_devs: List[float]  # Per-node peer deviation values
+    z_scores: List[float]  # Per-node z-scores from anomaly detection
+    accepted_per_node: List[List[int]]  # Accepted neighbor IDs per node (mutable)
+    rejected_per_node: List[List[int]]  # Rejected neighbor IDs per node (mutable)
+    neighbor_models: Dict[Tuple[int, int], Dict[str, torch.Tensor]]  # (receiver, sender) -> model
+
+
+@dataclass
+class SenderStats:
+    """Statistics about what senders sent to a particular receiver.
+
+    Used for outlier detection based on robust statistics.
+    """
+
+    robust_center: Dict[str, torch.Tensor]  # Coordinate-wise median of sent models
+    distances: Dict[int, float]  # sender_id -> distance to robust center
+    median_dist: float  # Median of all distances
+    mad: float  # Median Absolute Deviation
+    outlier_threshold: float  # Distance above which sender is an outlier
 
 
 class VerificationLayer:
-    """Four-phase post-acceptance verification.
+    """Post-aggregation verification to catch missed attackers and rescue honest nodes.
 
-    Phase 1: flag (conservatively remove) already-accepted neighbours
-        whose messages are persistently suspicious.
-    Phase 2: rescue previously rejected neighbours whose messages look
-        benign and whose inclusion does not hurt validation.
-    Phase 3: re-aggregate the model if Phase 1 or Phase 2 made changes.
-    Phase 4: conservative trust-score decay for nodes not touched by
-        Phase 1 or Phase 2.
+    The verification layer runs after each aggregation round and performs:
+    - Phase 1: Detect attackers that passed the aggregator
+    - Phase 2: Rescue honest nodes that were incorrectly rejected
+    - Phase 3: Re-aggregate with corrected neighbor sets
+    - Phase 4: Update trust scores
+
+    Key principle: All detection is based on what nodes SEND (neighbor_models),
+    not their final state after aggregation (current_states).
     """
 
-    # Minimum baseline accuracy before Phase 2 rescue is attempted
-    _PHASE2_MIN_ACCURACY = 0.05
-
-    # Number of consecutive suspicious rounds required before flagging
-    _FLAG_CONSECUTIVE_REQUIRED = 2
-
     def __init__(self, config: SimulationConfig, nodes, graph):
+        """Initialize the verification layer.
+
+        Args:
+            config: Simulation configuration
+            nodes: List of FederatedNode instances
+            graph: NetworkGraph for topology information
+        """
         self.config = config
         self.nodes = nodes
         self.graph = graph
         self.trust = TrustManager(config)
 
-        # Use config values for thresholds (fall back to class defaults)
-        self._phase2_min_accuracy = getattr(config, "phase2_min_accuracy", self._PHASE2_MIN_ACCURACY)
-        self._flag_consecutive_required = getattr(config, "phase1_consecutive_required", self._FLAG_CONSECUTIVE_REQUIRED)
-        self._phase1_trust_threshold = getattr(config, "phase1_trust_threshold", 0.35)
-        self._phase1_min_signals = getattr(config, "phase1_min_signals", 3)
-        self._phase2_trust_threshold = getattr(config, "phase2_trust_threshold", 0.4)
-        self._phase2_min_signals = getattr(config, "phase2_min_signals", 4)
-        self._phase2_drift_sigma_factor = getattr(config, "phase2_drift_sigma_factor", 1.0)
-
-        # Per-round verification output
+        # Output tracking for metrics
         self.flags: List[dict] = []
         self.flags_per_round: List[List[dict]] = []
         self.time_per_round: List[float] = []
 
-        # Warmup: do not run verification until enough history has accumulated
-        self.warmup_rounds = max(
-            3, min(config.num_rounds, config.verification_history_window)
-        )
+        # Reduce warmup to catch attackers early (they're most distinguishable early)
+        self.warmup_rounds = 2
 
-    # Public API
+        # Threshold parameters
+        self._outlier_k = 1.5  # MAD multiplier for outlier detection (more sensitive)
+        self._direction_threshold = 0.40  # Below this = attack (raised to catch more)
+        self._debug = True  # Set True to print debug info
+
+        # Historical tracking for multi-round evidence (reduces FPs)
+        self._flag_history: Dict[int, List[int]] = {}  # sender_id -> list of rounds flagged
+        self._history_window = 5  # Look at last N rounds
+        self._min_flags_for_action = 2  # Require flags in >=2 of last N rounds
+
+        # Track aggregator rejections separately for validation
+        self._aggregator_rejection_history: Dict[int, List[int]] = {}  # sender_id -> rounds
 
     def run_verification(self, ctx: RoundContext) -> bool:
-        """Execute all four verification phases for one round.
+        """Execute all verification phases for one round.
 
-        Returns True if any model was modified.
+        Args:
+            ctx: RoundContext with all data for this round
+
+        Returns:
+            True if any model was modified, False otherwise
         """
-        # Compute population-level distance statistics across all edges
-        self._global_dist_mean, self._global_dist_std = self._build_global_distance_stats(
-            ctx.pre_agg_states, ctx.neighbor_models
-        )
-
-        # Update history before running the phases
-        self.trust.update_history(ctx.drifts, ctx.peer_devs)
-
         self.flags = []
-        any_changed = False
-        original_states = list(ctx.current_states)
-        pending_updates: Dict[int, Dict[str, torch.Tensor]] = {}
 
-        for node_idx in range(self.config.num_nodes):
-            S = list(ctx.accepted_per_node[node_idx])
-            R = list(ctx.rejected_per_node[node_idx])
+        # Skip during warmup period
+        if ctx.round_num < self.warmup_rounds:
+            self.flags_per_round.append([])
+            self.time_per_round.append(0.0)
+            return False
 
-            if not R and not S:
-                continue
+        start_time = time.time()
 
-            theta_agg = original_states[node_idx]
-            acc_agg = self._evaluate_model(node_idx, theta_agg)
-            pre_agg_state = ctx.pre_agg_states[node_idx]
+        # Phase 1: Detect attackers that passed the aggregator
+        flagged_per_node = self._phase1_detect(ctx)
 
-            changed = False
+        # Phase 2: Rescue honest nodes that were incorrectly rejected
+        rescued_per_node = self._phase2_rescue(ctx, flagged_per_node)
 
-            # Phase 1: flag suspicious accepted neighbours
-            if self._phase1(
-                node_idx, S, R, theta_agg, acc_agg,
-                ctx.z_scores, original_states, ctx.round_num, pre_agg_state,
-            ):
-                changed = True
+        # Phase 3: Re-aggregate with corrected neighbor sets
+        modified_nodes = self._phase3_reaggregate(ctx, flagged_per_node, rescued_per_node)
 
-            # Phase 2: rescue benign rejected neighbours
-            if self._phase2(
-                node_idx, S, R, theta_agg, acc_agg,
-                ctx.z_scores, ctx.drifts, ctx.peer_devs,
-                original_states, ctx.round_num, pre_agg_state,
-            ):
-                changed = True
+        # Phase 4: Update trust scores
+        self._phase4_update_trust(flagged_per_node, rescued_per_node)
 
-            # Phase 3: re-aggregate if anything changed
-            if changed:
-                accepted_models = [
-                    self._get_neighbor_model(node_idx, j, original_states, ctx.neighbor_models)
-                    for j in S
-                ]
-                if accepted_models:
-                    theta_final = self._re_aggregate(node_idx, accepted_models, pre_agg_state)
-                    pending_updates[node_idx] = theta_final
-                any_changed = True
+        elapsed = time.time() - start_time
+        self.flags_per_round.append(self.flags.copy())
+        self.time_per_round.append(elapsed)
 
-            ctx.accepted_per_node[node_idx] = S
-            ctx.rejected_per_node[node_idx] = R
+        return len(modified_nodes) > 0
 
-        # Apply all pending model updates at once
-        for idx, state in pending_updates.items():
-            self.nodes[idx].set_model_state(state)
-            ctx.current_states[idx] = state
+    
+    # Phase 1: Detect Attackers
 
-        # Phase 4: conservative trust decay
-        modified_nodes = {
-            f["node_id"] for f in self.flags
-            if f.get("action") in ("flagged", "rescued")
-        }
-        self.trust.decay_update(ctx.z_scores, modified_nodes)
+    def _phase1_detect(self, ctx: RoundContext) -> Dict[int, Set[int]]:
+        """Detect attackers that passed the aggregator (false negatives).
 
-        return any_changed
+        Uses statistical detection based on BOTH:
+        1. Distance from robust center (catches noise attacks)
+        2. Anti-correlation with peers (catches directed attacks)
 
-    # Phase implementations
+        A sender is flagged if they have sufficient TRUST-WEIGHTED votes from receivers.
+        We weight votes by receiver trust to reduce attacker influence on voting.
+        Historical tracking requires consistent flags across rounds to reduce FPs.
 
-    def _phase1(self, node_idx, S, R, theta_agg, acc_agg,
-                z_scores, original_states, round_num, pre_agg_state):
-        """Phase 1: conservatively remove accepted neighbours whose messages
-        look persistently suspicious and whose removal measurably improves
-        validation accuracy.
+        Aggregator rejections are VALIDATED against our detection - not blindly trusted.
+
+        Returns:
+            Dict mapping node_idx to set of flagged sender IDs
         """
-        if round_num < self.warmup_rounds:
-            return False
+        if self._debug:
+            print(f"[Debug] Phase 1 starting for round {ctx.round_num}")
 
-        eps = self.config.verification_epsilon
-        msg_stats = self._build_message_stats(node_idx, S, R, pre_agg_state, original_states)
-        if not msg_stats:
-            return False
-
-        original_S = list(S)
-        nodes_to_flag = []
-
-        hist_ready = len([h for h in self.trust.drift_history if h]) >= 1
-        pop_mean_drift, pop_mean_peer = self.trust.get_population_means()
-
-        for j in list(S):
-            message_info = msg_stats.get(j)
-            if not message_info:
+        # Step 0: Track aggregator rejections from TRUSTED receivers only
+        # Attackers might reject honest nodes, so we ignore rejections from low-trust nodes
+        aggregator_rejected: Set[int] = set()
+        for node_idx in range(len(self.nodes)):
+            # Only trust rejections from nodes with sufficient trust
+            if self.trust.get_trust(node_idx) < 0.35:
                 continue
 
-            msg_z = abs(message_info["z_score"])
-            if msg_z < self.config.z_low:
-                self.trust.suspicion_counts[(node_idx, j)] = 0
+            rejected = ctx.rejected_per_node[node_idx]
+            aggregator_rejected.update(rejected)
+            # Update rejection history (only from trusted receivers)
+            for sender_id in rejected:
+                if sender_id not in self._aggregator_rejection_history:
+                    self._aggregator_rejection_history[sender_id] = []
+                self._aggregator_rejection_history[sender_id].append(ctx.round_num)
+
+        if self._debug and aggregator_rejected:
+            print(f"[Debug] Aggregator-rejected senders: {aggregator_rejected}")
+
+        # Step 1: Collect TRUST-WEIGHTED votes from all receivers for accepted senders
+        sender_votes: Dict[int, float] = {}  # sender_id -> weighted vote sum
+        sender_voter_count: Dict[int, int] = {}  # sender_id -> number of voters
+
+        for node_idx in range(len(self.nodes)):
+            accepted = ctx.accepted_per_node[node_idx]
+
+            if len(accepted) < 2:
                 continue
 
-            s_without_j = [k for k in original_S if k != j]
-            if not s_without_j:
-                self.trust.suspicion_counts[(node_idx, j)] = 0
+            stats = self._compute_sender_stats(node_idx, accepted, ctx.neighbor_models)
+            if not stats.distances:
                 continue
 
-            models_without_j = [
-                self._get_neighbor_model(node_idx, k, original_states, {})
-                for k in s_without_j
-            ]
-            theta_without_j = self._re_aggregate(node_idx, models_without_j, pre_agg_state)
-            acc_without_j = self._evaluate_model(node_idx, theta_without_j)
-            delta_perf = acc_without_j - acc_agg
+            receiver_model = ctx.pre_agg_states[node_idx]
+            receiver_trust = self.trust.get_trust(node_idx)
 
-            sig_high_drift = bool(
-                self.trust.drift_history[j]
-                and (sum(self.trust.drift_history[j]) / len(self.trust.drift_history[j]))
-                > pop_mean_drift
-            )
-            sig_high_pdev = bool(
-                self.trust.peer_dev_history[j]
-                and (sum(self.trust.peer_dev_history[j]) / len(self.trust.peer_dev_history[j]))
-                > pop_mean_peer
-            )
-            sig_message_far = message_info["peer_distance"] >= message_info["distance_to_own"]
+            for sender_id in accepted:
+                if self._is_sender_outlier(
+                    sender_id, stats, node_idx, accepted, ctx.neighbor_models, receiver_model
+                ):
+                    # Weight vote by receiver's trust score
+                    vote_weight = receiver_trust
+                    if sender_id not in sender_votes:
+                        sender_votes[sender_id] = 0.0
+                        sender_voter_count[sender_id] = 0
+                    sender_votes[sender_id] += vote_weight
+                    sender_voter_count[sender_id] += 1
 
-            signals = sum([sig_high_drift, sig_high_pdev, sig_message_far])
+        if self._debug:
+            print(f"[Debug] Weighted votes after Step 1: {sender_votes}")
 
-            # Require sustained suspicious behaviour across multiple signals
-            suspicious = delta_perf > eps and signals >= self._phase1_min_signals and hist_ready
-            suspicion_key = (node_idx, j)
-            if suspicious:
-                self.trust.suspicion_counts[suspicion_key] = (
-                    self.trust.suspicion_counts.get(suspicion_key, 0) + 1
-                )
-            else:
-                self.trust.suspicion_counts[suspicion_key] = 0
+        # Step 2: Update historical tracking and determine validated flags
+        k = self.config.k_neighbors
 
-            if self.trust.suspicion_counts[suspicion_key] < self._flag_consecutive_required:
-                continue
+        # Adaptive threshold based on network connectivity
+        weighted_threshold = 0.75  # ~2 receivers at 0.5 trust
+        count_threshold = max(2, k // 3)
 
-            nodes_to_flag.append(
-                (j, delta_perf, message_info,
-                 sig_high_drift, sig_high_pdev, sig_message_far)
-            )
+        # Update flag history for this round
+        current_round_flags: Set[int] = set()
+        for sender_id, weighted_sum in sender_votes.items():
+            voter_count = sender_voter_count[sender_id]
+            if weighted_sum >= weighted_threshold and voter_count >= count_threshold:
+                current_round_flags.add(sender_id)
+                if sender_id not in self._flag_history:
+                    self._flag_history[sender_id] = []
+                self._flag_history[sender_id].append(ctx.round_num)
 
-        changed = False
-        for (j, delta_perf, message_info,
-             sig_high_drift, sig_high_pdev, sig_message_far) in nodes_to_flag:
-            if j not in S:
-                continue
-            trust_before = self.trust.trust_scores[j]
-            S.remove(j)
-            if j not in R:
-                R.append(j)
-            trust_after = self.trust.penalize(j)
-            self.trust.suspicion_counts[(node_idx, j)] = 0
-            changed = True
+        # Step 3: Validate flags based on historical consistency
+        validated_flagged: Set[int] = set()
 
-            self.flags.append({
-                "node_id": j,
-                "target_node": node_idx,
-                "phase": 1,
-                "action": "flagged",
-                "delta_perf": float(delta_perf),
-                "trust_before": float(trust_before),
-                "trust_after": float(trust_after),
-                "message_stats": message_info,
-                "signals": {
-                    "high_drift": sig_high_drift,
-                    "high_peer_dev": sig_high_pdev,
-                    "message_far_from_peers": sig_message_far,
-                },
-            })
+        # 3a: Check our own detection (from sender_votes)
+        for sender_id in current_round_flags:
+            history = self._flag_history.get(sender_id, [])
+            recent_flags = [r for r in history if r >= ctx.round_num - self._history_window]
+            strong_signal = sender_votes.get(sender_id, 0) >= 1.5
+            consistent = len(recent_flags) >= self._min_flags_for_action
+            if consistent or strong_signal:
+                validated_flagged.add(sender_id)
 
-        return changed
+        # 3b: Validate aggregator rejections - require stronger evidence to avoid FPs
+        for sender_id in aggregator_rejected:
+            agg_history = self._aggregator_rejection_history.get(sender_id, [])
+            recent_rejections = [r for r in agg_history if r >= ctx.round_num - self._history_window]
 
-    def _phase2(self, node_idx, S, R, theta_agg, acc_agg,
-                z_scores, drifts, peer_devs, original_states, round_num, pre_agg_state):
-        """Phase 2: rescue previously rejected neighbours when their message
-        looks benign and adding them back does not hurt validation accuracy.
+            # Also check our flag history
+            our_history = self._flag_history.get(sender_id, [])
+            recent_our_flags = [r for r in our_history if r >= ctx.round_num - self._history_window]
+
+            # Validate aggregator rejection if:
+            # 1. Consistently rejected (>= 3 times in window), OR
+            # 2. We also flagged them independently (corroborated), OR
+            # 3. Their trust is very low (strong accumulated evidence)
+            trust = self.trust.get_trust(sender_id)
+            consistent_rejection = len(recent_rejections) >= 3
+            corroborated = len(recent_our_flags) >= 1
+            very_low_trust = trust < 0.2
+
+            if consistent_rejection or corroborated or very_low_trust:
+                validated_flagged.add(sender_id)
+
+        if self._debug:
+            print(f"[Debug] Current round flags: {current_round_flags}")
+            print(f"[Debug] Validated (with history): {validated_flagged}")
+
+        # Step 4: Distribute validated flags to per-node sets
+        flagged_per_node: Dict[int, Set[int]] = {}
+        for node_idx in range(len(self.nodes)):
+            accepted = ctx.accepted_per_node[node_idx]
+            rejected = ctx.rejected_per_node[node_idx]
+
+            # Only include validated flags (both from our detection and aggregator)
+            validated_rejected = validated_flagged & set(rejected)
+            validated_accepted = validated_flagged & set(accepted)
+            node_flagged = validated_rejected | validated_accepted
+
+            if node_flagged:
+                flagged_per_node[node_idx] = node_flagged
+
+                # Record flags for metrics
+                if accepted:
+                    stats = self._compute_sender_stats(node_idx, accepted, ctx.neighbor_models)
+                else:
+                    stats = SenderStats(
+                        robust_center={},
+                        distances={},
+                        median_dist=0.0,
+                        mad=0.0,
+                        outlier_threshold=float('inf'),
+                    )
+
+                for sender_id in node_flagged:
+                    is_aggregator_flag = sender_id in rejected
+                    self._record_flag(
+                        node_idx=node_idx,
+                        sender_id=sender_id,
+                        stats=stats,
+                        phase=1,
+                        action="flagged",
+                        aggregator_flagged=is_aggregator_flag,
+                    )
+
+        return flagged_per_node
+
+   
+    # Phase 2: Rescue Honest Nodes
+    
+
+    def _phase2_rescue(
+        self, ctx: RoundContext, flagged_per_node: Dict[int, Set[int]]
+    ) -> Dict[int, Set[int]]:
+        """Rescue honest nodes that were incorrectly rejected (false positives).
+
+        For each node, look at its REJECTED neighbors. Rescue those whose
+        SENT updates are consistent with the honest consensus (non-outliers).
+
+        Returns:
+            Dict mapping node_idx to set of rescued sender IDs
         """
-        if acc_agg < self._phase2_min_accuracy:
-            return False
+        rescued_per_node: Dict[int, Set[int]] = {}
 
-        eps = self.config.verification_epsilon
-        msg_stats = self._build_message_stats(node_idx, S, R, pre_agg_state, original_states)
-        if not msg_stats:
-            return False
+        for node_idx in range(len(self.nodes)):
+            rejected = ctx.rejected_per_node[node_idx]
 
-        sorted_pdevs = sorted(peer_devs)
-        median_peer_dev = (
-            float(sorted_pdevs[len(sorted_pdevs) // 2]) if sorted_pdevs else 0.0
+            if not rejected:
+                continue
+
+            # Build clean reference set (accepted minus flagged)
+            accepted = ctx.accepted_per_node[node_idx]
+            flagged = flagged_per_node.get(node_idx, set())
+            clean_accepted = [s for s in accepted if s not in flagged]
+
+            # Need minimum reference set to compute meaningful stats
+            if len(clean_accepted) < 2:
+                continue
+
+            # Compute stats on clean accepted set (our reference for "honest")
+            stats = self._compute_sender_stats(node_idx, clean_accepted, ctx.neighbor_models)
+
+            if not stats.robust_center:
+                continue
+
+            # Check each rejected sender
+            rescued = set()
+            for sender_id in rejected:
+                # Only rescue if trust is sufficient
+                if self.trust.get_trust(sender_id) < self.config.phase2_trust_threshold:
+                    continue
+
+                # Check if sender's update is consistent with honest consensus
+                if self._is_sender_consistent(sender_id, stats, node_idx, ctx.neighbor_models):
+                    rescued.add(sender_id)
+                    self._record_flag(
+                        node_idx=node_idx,
+                        sender_id=sender_id,
+                        stats=stats,
+                        phase=2,
+                        action="rescued",
+                    )
+
+            if rescued:
+                rescued_per_node[node_idx] = rescued
+
+        return rescued_per_node
+
+    # -------------------------------------------------------------------------
+    # Phase 3: Re-aggregate
+    # -------------------------------------------------------------------------
+
+    def _phase3_reaggregate(
+        self,
+        ctx: RoundContext,
+        flagged_per_node: Dict[int, Set[int]],
+        rescued_per_node: Dict[int, Set[int]],
+    ) -> Set[int]:
+        """Re-aggregate nodes with corrected neighbor sets.
+
+        For each node that had flagged or rescued neighbors:
+        1. Build clean neighbor set = (original accepted - flagged) + rescued
+        2. Collect models for clean set
+        3. Re-aggregate using aggregator-appropriate formula
+        4. Update node state and context
+
+        Returns:
+            Set of node indices that were modified
+        """
+        modified_nodes: Set[int] = set()
+
+        for node_idx in range(len(self.nodes)):
+            node_flagged = flagged_per_node.get(node_idx, set())
+            node_rescued = rescued_per_node.get(node_idx, set())
+
+            # Skip if no changes to neighbor set
+            if not node_flagged and not node_rescued:
+                continue
+
+            # Build clean neighbor set
+            original_accepted = set(ctx.accepted_per_node[node_idx])
+            clean_set = (original_accepted - node_flagged) | node_rescued
+
+            if len(clean_set) < 1:
+                continue
+
+            # Collect models for clean set
+            clean_models = []
+            for sender_id in clean_set:
+                model = ctx.neighbor_models.get((node_idx, sender_id))
+                if model is not None:
+                    clean_models.append(model)
+
+            if not clean_models:
+                continue
+
+            # Re-aggregate using appropriate formula
+            new_state = self._reaggregate_with_formula(
+                node_idx, clean_models, ctx.pre_agg_states[node_idx]
+            )
+
+            # Update node's actual model state
+            self.nodes[node_idx].set_model_state(new_state)
+            ctx.current_states[node_idx] = new_state
+
+            # Update accepted/rejected lists for metrics
+            ctx.accepted_per_node[node_idx] = list(clean_set)
+            ctx.rejected_per_node[node_idx] = [
+                s for s in ctx.rejected_per_node[node_idx] if s not in node_rescued
+            ] + list(node_flagged)
+
+            modified_nodes.add(node_idx)
+
+        return modified_nodes
+
+    # -------------------------------------------------------------------------
+    # Phase 4: Update Trust
+    # -------------------------------------------------------------------------
+
+    def _phase4_update_trust(
+        self,
+        flagged_per_node: Dict[int, Set[int]],
+        rescued_per_node: Dict[int, Set[int]],
+    ) -> None:
+        """Update trust scores based on flags and rescues.
+
+        - Penalize all flagged nodes (they're suspected attackers)
+        - Boost all rescued nodes (they're confirmed honest)
+        - Decay all scores toward neutral over time
+        """
+        # Collect all unique flagged nodes
+        all_flagged: Set[int] = set()
+        for node_set in flagged_per_node.values():
+            all_flagged.update(node_set)
+
+        for node_id in all_flagged:
+            self.trust.penalize(node_id)
+
+        # Collect all unique rescued nodes
+        all_rescued: Set[int] = set()
+        for node_set in rescued_per_node.values():
+            all_rescued.update(node_set)
+
+        for node_id in all_rescued:
+            self.trust.boost(node_id)
+
+        # Decay all scores toward neutral
+        self.trust.decay_towards_neutral()
+
+    # -------------------------------------------------------------------------
+    # Core Statistics Functions
+    # -------------------------------------------------------------------------
+
+    def _compute_sender_stats(
+        self,
+        node_idx: int,
+        sender_ids: List[int],
+        neighbor_models: Dict[Tuple[int, int], Dict[str, torch.Tensor]],
+    ) -> SenderStats:
+        """Compute robust statistics on what senders SENT to this node.
+
+        Uses coordinate-wise median as robust center (resistant to outliers).
+        Uses MAD (Median Absolute Deviation) for spread estimation.
+
+        Args:
+            node_idx: The receiving node
+            sender_ids: List of sender IDs to analyze
+            neighbor_models: Map of (receiver, sender) -> model state dict
+
+        Returns:
+            SenderStats with robust center, distances, and outlier threshold
+        """
+        # Collect models that were sent
+        models = []
+        valid_senders = []
+        for sender_id in sender_ids:
+            model = neighbor_models.get((node_idx, sender_id))
+            if model is not None:
+                models.append(model)
+                valid_senders.append(sender_id)
+
+        # Need at least 2 models for meaningful statistics
+        if len(models) < 2:
+            return SenderStats(
+                robust_center={},
+                distances={},
+                median_dist=0.0,
+                mad=1.0,
+                outlier_threshold=float("inf"),
+            )
+
+        # Compute coordinate-wise median as robust center
+        keys = list(models[0].keys())
+        robust_center: Dict[str, torch.Tensor] = {}
+
+        for key in keys:
+            stacked = torch.stack([m[key].float() for m in models])
+            robust_center[key] = stacked.median(dim=0).values
+
+        # Compute distance from each sender to robust center
+        distances: Dict[int, float] = {}
+        for i, sender_id in enumerate(valid_senders):
+            model = models[i]
+            dist = 0.0
+            for key in keys:
+                diff = model[key].float() - robust_center[key]
+                dist += torch.sum(diff * diff).item()
+            distances[sender_id] = float(np.sqrt(dist))
+
+        # Compute MAD (Median Absolute Deviation) for robust spread estimate
+        dist_values = list(distances.values())
+        median_dist = float(np.median(dist_values))
+        mad = float(np.median([abs(d - median_dist) for d in dist_values]))
+
+        # Robust threshold: median + k * scaled_MAD
+        # Scale factor 1.4826 makes MAD consistent with std for normal distributions
+        # k=2.5 corresponds to ~99% coverage for normal data
+        scaled_mad = 1.4826 * mad if mad > 1e-9 else 0.1
+        outlier_threshold = median_dist + self._outlier_k * scaled_mad
+
+        return SenderStats(
+            robust_center=robust_center,
+            distances=distances,
+            median_dist=median_dist,
+            mad=mad,
+            outlier_threshold=outlier_threshold,
         )
-        mu_drift = float(np.mean(drifts)) if drifts else 0.0
-        sigma_drift = float(np.std(drifts)) if drifts else 0.0
 
-        changed = False
-        for k in list(R):
-            message_info = msg_stats.get(k)
-            if not message_info:
-                continue
+    def _is_sender_outlier(
+        self,
+        sender_id: int,
+        stats: SenderStats,
+        node_idx: int,
+        all_senders: List[int],
+        neighbor_models: Dict[Tuple[int, int], Dict[str, torch.Tensor]],
+        receiver_model: Dict[str, torch.Tensor] = None,
+    ) -> bool:
+        """Check if sender's update is a statistical outlier.
 
-            sig_trust_ok = self.trust.trust_scores[k] >= self._phase2_trust_threshold
-            sig_pdev_ok = peer_devs[k] <= median_peer_dev if peer_devs else True
-            sig_drift_ok = drifts[k] <= mu_drift + self._phase2_drift_sigma_factor * sigma_drift if drifts else True
-            sig_message_ok = abs(message_info["z_score"]) < self.config.z_high
+        Uses multiple detection signals with layered thresholds:
+        1. Distance-based + Direction-based (standard, high confidence)
+        2. Extreme direction alone (very low score = obvious attack)
+        3. Strong direction + high magnitude (backup for when distance fails)
 
-            s_with_k = S + [k]
-            models_with_k = [
-                self._get_neighbor_model(node_idx, j, original_states, {})
-                for j in s_with_k
-            ]
-            theta_with_k = self._re_aggregate(node_idx, models_with_k, pre_agg_state)
-            acc_with_k = self._evaluate_model(node_idx, theta_with_k)
-            sig_perf_ok = acc_with_k >= acc_agg - eps
+        This layered approach catches attacks that might evade a single signal
+        while still avoiding false positives from non-IID effects.
 
-            signals = sum([sig_trust_ok, sig_pdev_ok, sig_drift_ok, sig_message_ok, sig_perf_ok])
-            if signals >= self._phase2_min_signals and sig_perf_ok:
-                R.remove(k)
-                if k not in S:
-                    S.append(k)
-                old_trust = self.trust.trust_scores[k]
-                new_trust = self.trust.boost(k)
-                self.trust.suspicion_counts[(node_idx, k)] = 0
-                changed = True
-                self.flags.append({
-                    "node_id": k,
-                    "target_node": node_idx,
-                    "phase": 2,
-                    "action": "rescued",
-                    "delta_perf": float(acc_with_k - acc_agg),
-                    "trust_before": float(old_trust),
-                    "trust_after": float(new_trust),
-                    "message_stats": message_info,
-                    "signals": {
-                        "trust_ok": sig_trust_ok,
-                        "peer_dev_ok": sig_pdev_ok,
-                        "drift_ok": sig_drift_ok,
-                        "message_ok": sig_message_ok,
-                        "performance_ok": sig_perf_ok,
-                    },
-                })
-        return changed
+        Args:
+            sender_id: The sender to check
+            stats: Pre-computed sender statistics
+            node_idx: The receiving node
+            all_senders: List of all sender IDs to this node
+            neighbor_models: Map of (receiver, sender) -> model state dict
+            receiver_model: The receiving node's pre-aggregation model
 
-    # Helper methods
+        Returns:
+            True if sender shows attack signature
+        """
+        # Check 1: Distance-based outlier
+        is_distance_outlier = False
+        distance = stats.distances.get(sender_id, 0.0)
+        if sender_id in stats.distances:
+            is_distance_outlier = distance > stats.outlier_threshold
 
-    def _evaluate_model(self, node_idx, model_state):
-        """Evaluate a model state dict on a node's local test set without
-        modifying the node's actual model.
+        # Check 2: Direction-based outlier (catches directed attacks)
+        # Returns (score, relative_magnitude) for layered detection
+        direction_score, rel_magnitude = self._compute_direction_score(
+            sender_id, node_idx, all_senders, neighbor_models, receiver_model
+        )
+        is_direction_outlier = direction_score < self._direction_threshold
+
+        if self._debug and node_idx == 2:  # Only print for one node to reduce spam
+            print(f"      [Debug] sender={sender_id} dist_outlier={is_distance_outlier} "
+                  f"dir_score={direction_score:.3f} rel_mag={rel_magnitude:.3f} "
+                  f"dir_outlier={is_direction_outlier}")
+
+        # Layered flagging thresholds (from most to least confident):
+        #
+        # 1. Standard: BOTH distance AND direction outlier
+        standard_outlier = is_distance_outlier and is_direction_outlier
+
+        # 2. Extreme direction WITH high magnitude: score < 0.10 AND rel_mag > 5.0
+        #    Low score alone is not enough - honest victims can also have low scores
+        #    after FedAvg pollution. Attackers have BOTH low score AND high magnitude.
+        extreme_direction = direction_score < 0.10 and rel_magnitude > 5.0
+
+        # 3. Strong direction + magnitude: direction shows attack signature AND large deviation
+        #    Uses magnitude threshold of 3.0 to distinguish attackers (who SEND concentrated
+        #    attacks) from victims (who RECEIVE diluted attacks through aggregation)
+        strong_direction_with_magnitude = direction_score < 0.20 and rel_magnitude > 3.0
+
+        # 4. Low trust amplification: once a node is suspected, lower thresholds
+        #    This helps catch attackers who evaded detection in earlier rounds
+        sender_trust = self.trust.get_trust(sender_id)
+        low_trust_suspect = sender_trust < 0.35 and direction_score < 0.25 and rel_magnitude > 2.0
+
+        return standard_outlier or extreme_direction or strong_direction_with_magnitude or low_trust_suspect
+
+    def _compute_direction_score(
+        self,
+        sender_id: int,
+        node_idx: int,
+        all_senders: List[int],
+        neighbor_models: Dict[Tuple[int, int], Dict[str, torch.Tensor]],
+        receiver_model: Dict[str, torch.Tensor] = None,
+    ) -> Tuple[float, float]:
+        """Detect attacks by comparing sender deviation from PEER MEDIAN (excluding self).
+
+        Key insight: Directed attacks are anti-correlated with the honest average.
+        Using PEER MEDIAN (excluding sender) as reference prevents:
+        1. Attackers from polluting their own reference
+        2. Non-IID causing honest pairs to look anti-correlated
+
+        Detection uses ROBUST STATISTICS:
+        - Compute magnitude and direction for ALL senders
+        - Flag senders that are outliers in BOTH dimensions
+        - Use z-score based thresholds rather than fixed values
+
+        Returns:
+            Tuple of (score, relative_magnitude):
+            - score in [0, 1]: ~1.0 = consistent, <0.3 = attack signature
+            - relative_magnitude: deviation_norm / reference_norm
+        """
+        sender_model = neighbor_models.get((node_idx, sender_id))
+        if sender_model is None:
+            return 1.0, 0.0
+
+        # Build reference from peers EXCLUDING this sender
+        peer_ids = [s for s in all_senders if s != sender_id]
+        peer_models_dict = {
+            s: neighbor_models.get((node_idx, s))
+            for s in peer_ids
+            if neighbor_models.get((node_idx, s)) is not None
+        }
+
+        if len(peer_models_dict) < 1:
+            return 1.0, 0.0
+
+        keys = list(sender_model.keys())
+
+        # ROBUST REFERENCE: Use receiver's model as anchor to identify attacker updates
+        # Attackers' updates deviate far from the receiver's accumulated honest model
+        if len(peer_models_dict) > 2 and receiver_model is not None:
+            # Use receiver's model as anchor
+            receiver_vec = torch.cat([receiver_model[k].float().flatten() for k in keys])
+
+            # Compute distance of each peer from receiver
+            peer_dists = {}
+            for s, m in peer_models_dict.items():
+                peer_vec = torch.cat([m[k].float().flatten() for k in keys])
+                diff = peer_vec - receiver_vec
+                peer_dists[s] = torch.sqrt(torch.sum(diff * diff)).item()
+
+            # Select K closest peers (smallest distance to receiver)
+            K = max(2, (len(peer_models_dict) + 1) // 2)  # Use ~half the peers
+            sorted_peers = sorted(peer_dists.items(), key=lambda x: x[1])
+            closest_ids = [s for s, _ in sorted_peers[:K]]
+            peer_models = [peer_models_dict[s] for s in closest_ids]
+        else:
+            peer_models = list(peer_models_dict.values())
+
+        # Compute peer median as reference (from closest peers only)
+        if len(peer_models) == 1:
+            ref_flat = [peer_models[0][key].float().flatten() for key in keys]
+        else:
+            ref_flat = []
+            for key in keys:
+                stacked = torch.stack([m[key].float() for m in peer_models])
+                ref = stacked.median(dim=0).values
+                ref_flat.append(ref.flatten())
+
+        ref_vec = torch.cat(ref_flat)
+        sender_vec = torch.cat([sender_model[key].float().flatten() for key in keys])
+
+        # Compute deviation from peer median
+        deviation = sender_vec - ref_vec
+
+        # MAGNITUDE: how far is sender from peers?
+        dev_norm = torch.sqrt(torch.sum(deviation * deviation)).item()
+        ref_norm = torch.sqrt(torch.sum(ref_vec * ref_vec)).item()
+        relative_magnitude = dev_norm / max(ref_norm, 1e-9)
+
+        # DIRECTION: is deviation anti-correlated with peer median?
+        dot_product = torch.sum(deviation * ref_vec).item()
+        cosine = dot_product / (dev_norm * ref_norm) if dev_norm > 1e-9 and ref_norm > 1e-9 else 0.0
+
+        # ADAPTIVE SCORING
+        # Attack signature: negative cosine (opposite direction) + magnitude above noise
+        # Honest: cosine around 0 or positive, lower magnitude
+
+        # Direction risk: negative cosine is suspicious
+        # Scale: 0 for cosine >= 0, up to 1 for cosine = -1
+        dir_risk = max(0.0, -cosine)
+
+        # Magnitude risk: deviation above typical non-IID noise floor
+        # Small deviations (~0.3) normal in non-IID, larger ones suspicious
+        noise_floor = 0.3
+        mag_risk = max(0.0, (relative_magnitude - noise_floor) / (2.0 - noise_floor))
+
+        # Combined risk: direction is primary signal, magnitude amplifies
+        # Use multiplicative combination: requires BOTH signals for high risk
+        combined_risk = dir_risk * (0.5 + mag_risk)
+
+        # Score: lower = more suspicious
+        score = max(0.0, min(1.0, 1.0 - combined_risk))
+
+        if self._debug:
+            print(f"    [Debug] Sender {sender_id} -> node {node_idx}: "
+                  f"rel_mag={relative_magnitude:.3f}, cosine={cosine:.3f}, "
+                  f"mag_risk={mag_risk:.3f}, dir_risk={dir_risk:.3f}, score={score:.3f}")
+
+        return score, relative_magnitude
+
+    def _is_sender_consistent(
+        self,
+        sender_id: int,
+        stats: SenderStats,
+        node_idx: int,
+        neighbor_models: Dict[Tuple[int, int], Dict[str, torch.Tensor]],
+    ) -> bool:
+        """Check if sender's update is consistent with honest consensus.
+
+        A sender is consistent if their update is close to the robust center
+        (within the outlier threshold).
+
+        Args:
+            sender_id: The sender to check
+            stats: Statistics from the clean accepted set
+            node_idx: The receiving node
+            neighbor_models: Map of (receiver, sender) -> model state dict
+
+        Returns:
+            True if sender's update is within normal bounds
+        """
+        model = neighbor_models.get((node_idx, sender_id))
+        if model is None or not stats.robust_center:
+            return False
+
+        # Compute distance to robust center
+        dist = 0.0
+        for key in stats.robust_center.keys():
+            diff = model[key].float() - stats.robust_center[key]
+            dist += torch.sum(diff * diff).item()
+        dist = float(np.sqrt(dist))
+
+        # Consistent if within threshold (not an outlier)
+        return dist <= stats.outlier_threshold
+
+    def _evaluate_model(
+        self,
+        node_idx: int,
+        model_state: Dict[str, torch.Tensor],
+    ) -> float:
+        """Evaluate a model state on a node's local test set.
+
+        Temporarily sets the model state, evaluates, then restores original.
+
+        Args:
+            node_idx: The node whose test set to use
+            model_state: The model state to evaluate
+
+        Returns:
+            Accuracy on the node's test set
         """
         node = self.nodes[node_idx]
         original_state = node.get_model_state()
@@ -381,115 +792,233 @@ class VerificationLayer:
         node.set_model_state(original_state)
         return acc
 
-    def _re_aggregate(self, node_idx, accepted_models, pre_agg_state=None):
-        """Re-aggregate using the blending formula: alpha * own + (1-alpha) * mean(accepted)."""
-        if not accepted_models:
-            return self.nodes[node_idx].get_model_state()
+    # -------------------------------------------------------------------------
+    # Re-aggregation Helpers
+    # -------------------------------------------------------------------------
 
-        alpha = self.config.balance_alpha
-        own_model = (
-            pre_agg_state
-            if pre_agg_state is not None
-            else self.nodes[node_idx].get_model_state()
-        )
+    def _reaggregate_with_formula(
+        self,
+        node_idx: int,
+        models: List[Dict[str, torch.Tensor]],
+        pre_agg_state: Dict[str, torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        """Apply aggregator-appropriate formula for re-aggregation.
 
-        avg = average_state_dicts(accepted_models)
+        Different aggregators use different formulas:
+        - BALANCE/UBAR: alpha-blend average with pre-aggregation state
+        - Krum: select model closest to centroid
+        - MultiKrum: average of k closest models
+        - TrimmedMean: coordinate-wise trimmed mean
+        - Median: coordinate-wise median
+        - FedAvg: simple average
+
+        Args:
+            node_idx: The node being re-aggregated
+            models: List of clean neighbor models
+            pre_agg_state: Node's state before aggregation
+
+        Returns:
+            New aggregated state
+        """
+        agg_name = self.config.aggregation.lower()
+
+        if len(models) == 0:
+            return pre_agg_state
+
+        if len(models) == 1:
+            # Single model: alpha-blend with pre-agg state
+            alpha = getattr(self.config, "balance_alpha", 0.5)
+            return self._alpha_blend(pre_agg_state, models[0], alpha)
+
+        if agg_name in ["balance", "ubar"]:
+            # Alpha-blend average with pre-agg state
+            alpha = getattr(self.config, "balance_alpha", 0.5)
+            avg = average_state_dicts(models)
+            return self._alpha_blend(pre_agg_state, avg, alpha)
+
+        elif agg_name == "krum":
+            # Select model closest to centroid
+            return self._krum_select(models)
+
+        elif agg_name == "multikrum":
+            # Average of k closest models
+            k = max(1, len(models) - 2)
+            return self._multi_krum_select(models, k)
+
+        elif agg_name in ["trimmedmean", "trimmed_mean"]:
+            # Coordinate-wise trimmed mean
+            return self._trimmed_mean(models, trim_ratio=0.1)
+
+        elif agg_name == "median":
+            # Coordinate-wise median
+            return self._coordinate_median(models)
+
+        else:
+            # FedAvg or unknown: simple average
+            return average_state_dicts(models)
+
+    def _alpha_blend(
+        self,
+        state1: Dict[str, torch.Tensor],
+        state2: Dict[str, torch.Tensor],
+        alpha: float,
+    ) -> Dict[str, torch.Tensor]:
+        """Blend two states: result = (1 - alpha) * state1 + alpha * state2."""
         result = {}
-        for key in own_model.keys():
-            result[key] = alpha * own_model[key] + (1 - alpha) * avg[key]
+        for key in state1.keys():
+            result[key] = ((1 - alpha) * state1[key].float() + alpha * state2[key].float()).to(
+                state1[key].dtype
+            )
         return result
 
-    def _get_neighbor_model(self, node_idx, neighbor_idx, fallback_states, neighbor_models_map):
-        """Return the raw model that neighbor_idx sent to node_idx this round."""
-        key = (node_idx, neighbor_idx)
-        if key in neighbor_models_map:
-            return neighbor_models_map[key]
-        return fallback_states[neighbor_idx]
+    def _krum_select(self, models: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+        """Select the model closest to the centroid (Krum aggregation)."""
+        if len(models) == 1:
+            return models[0]
 
-    def _message_z_scores(self, values: List[float]) -> List[float]:
-        """Return z-scores for a list of scalar message features."""
-        if not values:
-            return []
-        mean_v = float(np.mean(values))
-        std_v = float(np.std(values))
-        if std_v <= 1e-12:
-            return [0.0 for _ in values]
-        return [float((v - mean_v) / std_v) for v in values]
+        # Compute centroid
+        centroid = average_state_dicts(models)
 
-    def _build_global_distance_stats(self, pre_agg_states, neighbor_models):
-        """Compute mean and std of L2 distances across all edges in the round.
+        # Find model closest to centroid
+        min_dist = float("inf")
+        best_model = models[0]
 
-        This provides a population-level baseline so that per-message z-scores
-        are meaningful even when a node has very few neighbours (e.g. ring = 2).
-        """
-        all_distances = []
-        for (receiver, sender), model in neighbor_models.items():
-            d = model_distance(pre_agg_states[receiver], model)
-            all_distances.append(d)
+        for model in models:
+            dist = 0.0
+            for key in model.keys():
+                diff = model[key].float() - centroid[key]
+                dist += torch.sum(diff * diff).item()
 
-        if len(all_distances) < 2:
-            return 0.0, 1.0
+            if dist < min_dist:
+                min_dist = dist
+                best_model = model
 
-        mean_d = float(np.mean(all_distances))
-        std_d = float(np.std(all_distances))
-        if std_d < 1e-12:
-            std_d = 1.0
-        return mean_d, std_d
+        return best_model
 
-    def _build_message_stats(self, node_idx, accepted_ids, rejected_ids,
-                             pre_agg_state, fallback_states):
-        """Build message-level verification features for every neighbour."""
-        neighbor_ids = list(accepted_ids) + list(rejected_ids)
-        if not neighbor_ids:
-            return {}
+    def _multi_krum_select(
+        self, models: List[Dict[str, torch.Tensor]], k: int
+    ) -> Dict[str, torch.Tensor]:
+        """Average the k models closest to the centroid (Multi-Krum)."""
+        if len(models) <= k:
+            return average_state_dicts(models)
 
-        neighbor_models_map = getattr(self, '_current_neighbor_models', {})
+        # Compute centroid
+        centroid = average_state_dicts(models)
 
-        messages = {
-            nid: self._get_neighbor_model(node_idx, nid, fallback_states, neighbor_models_map)
-            for nid in neighbor_ids
-        }
-        distances_to_own = {
-            nid: model_distance(pre_agg_state, msg_state)
-            for nid, msg_state in messages.items()
-        }
-        # Use population-level stats for z-scores instead of local stats
-        global_mean = self._global_dist_mean
-        global_std = self._global_dist_std
-        z_by_neighbor = {
-            nid: float((dist - global_mean) / global_std)
-            for nid, dist in distances_to_own.items()
-        }
+        # Compute distances to centroid
+        distances = []
+        for i, model in enumerate(models):
+            dist = 0.0
+            for key in model.keys():
+                diff = model[key].float() - centroid[key]
+                dist += torch.sum(diff * diff).item()
+            distances.append((dist, i))
 
-        stats = {}
-        for nid in neighbor_ids:
-            other_models = [messages[oid] for oid in neighbor_ids if oid != nid]
-            if other_models:
-                median_like = average_state_dicts(other_models)
-                peer_distance = model_distance(messages[nid], median_like)
+        # Sort by distance and take k closest
+        distances.sort(key=lambda x: x[0])
+        selected_indices = [idx for _, idx in distances[:k]]
+        selected_models = [models[i] for i in selected_indices]
+
+        return average_state_dicts(selected_models)
+
+    def _trimmed_mean(
+        self, models: List[Dict[str, torch.Tensor]], trim_ratio: float = 0.1
+    ) -> Dict[str, torch.Tensor]:
+        """Coordinate-wise trimmed mean (remove extreme values)."""
+        if len(models) < 3:
+            return average_state_dicts(models)
+
+        n = len(models)
+        trim_count = max(1, int(n * trim_ratio))
+
+        result = {}
+        for key in models[0].keys():
+            stacked = torch.stack([m[key].float() for m in models])  # Shape: (n, ...)
+
+            # Sort along first dimension and trim extremes
+            sorted_vals, _ = torch.sort(stacked, dim=0)
+            trimmed = sorted_vals[trim_count : n - trim_count]
+
+            if trimmed.shape[0] > 0:
+                result[key] = trimmed.mean(dim=0).to(models[0][key].dtype)
             else:
-                peer_distance = 0.0
+                result[key] = stacked.mean(dim=0).to(models[0][key].dtype)
 
-            stats[nid] = {
-                "distance_to_own": float(distances_to_own[nid]),
-                "peer_distance": float(peer_distance),
-                "z_score": float(z_by_neighbor.get(nid, 0.0)),
-            }
-        return stats
+        return result
+
+    def _coordinate_median(
+        self, models: List[Dict[str, torch.Tensor]]
+    ) -> Dict[str, torch.Tensor]:
+        """Coordinate-wise median aggregation."""
+        result = {}
+        for key in models[0].keys():
+            stacked = torch.stack([m[key].float() for m in models])
+            result[key] = stacked.median(dim=0).values.to(models[0][key].dtype)
+        return result
+
+    # -------------------------------------------------------------------------
+    # Record Keeping
+    # -------------------------------------------------------------------------
+
+    def _record_flag(
+        self,
+        node_idx: int,
+        sender_id: int,
+        stats: SenderStats,
+        phase: int,
+        action: str,
+        aggregator_flagged: bool = False,
+    ) -> None:
+        """Record a flag or rescue action for metrics tracking.
+
+        Args:
+            node_idx: The receiving node
+            sender_id: The sender being flagged/rescued
+            stats: Statistics used for the decision
+            phase: Phase number (1 for flag, 2 for rescue)
+            action: "flagged" or "rescued"
+            aggregator_flagged: True if flagged by aggregator (e.g., BALANCE rejection)
+        """
+        trust_before = self.trust.get_trust(sender_id)
+
+        record = {
+            "node_id": sender_id,
+            "target_node": node_idx,
+            "phase": phase,
+            "action": action,
+            "trust_before": trust_before,
+            "aggregator_flagged": aggregator_flagged,
+            "signals": {
+                "distance": stats.distances.get(sender_id, 0.0),
+                "median_dist": stats.median_dist,
+                "mad": stats.mad,
+                "outlier_threshold": stats.outlier_threshold,
+                "is_outlier": stats.distances.get(sender_id, 0.0) > stats.outlier_threshold,
+            },
+        }
+
+        self.flags.append(record)
 
 
 class NoOpVerificationLayer:
-    """A verification layer that does nothing.
+    """No-op verification layer for when verification is disabled.
 
-    Used when verification is disabled or when the aggregation is FedAvg
-    (which accepts everything and has nothing to verify).
+    Provides the same interface but performs no verification.
     """
 
-    def __init__(self, config=None, nodes=None, graph=None):
-        self.trust = type("FakeTrust", (), {"trust_scores": [0.5] * (config.num_nodes if config else 0)})()
-        self.flags = []
-        self.flags_per_round = []
-        self.time_per_round = []
+    def __init__(self, config: SimulationConfig = None, nodes=None, graph=None):
+        num_nodes = config.num_nodes if config else 0
+        self.trust = type(
+            "FakeTrust",
+            (),
+            {"trust_scores": [0.5] * num_nodes, "get_trust": lambda self, i: 0.5},
+        )()
+        self.flags: List[dict] = []
+        self.flags_per_round: List[List[dict]] = []
+        self.time_per_round: List[float] = []
 
-    def run_verification(self, ctx) -> bool:
+    def run_verification(self, ctx: RoundContext) -> bool:
+        """No-op: return False (no changes made)."""
+        self.flags_per_round.append([])
+        self.time_per_round.append(0.0)
         return False

@@ -1,4 +1,4 @@
-"""Simulation configuration for decentralised federated learning experiments."""
+#Simulation configuration for decentralised federated learning experiments.
 
 from dataclasses import dataclass
 from typing import Optional
@@ -13,7 +13,7 @@ VALID_ATTACK_TYPES = ("directed", "gaussian", "label_flip", "alie")
 
 @dataclass
 class SimulationConfig:
-    """Holds every tuneable parameter for a single simulation run."""
+    #Holds every tuneable parameter for a single simulation run.
 
     dataset: str = "femnist"
     num_nodes: int = 32
@@ -64,14 +64,14 @@ class SimulationConfig:
     verification_history_window: int = 10
     rescue_revocation_rounds: int = 3
 
-    # Verification layer thresholds (previously hard-coded)
+    # Verification layer thresholds 
     phase1_trust_threshold: float = 0.35
     phase1_min_signals: int = 2
     phase1_consecutive_required: int = 1
-    phase2_trust_threshold: float = 0.4
-    phase2_min_accuracy: float = 0.05
-    phase2_min_signals: int = 4
-    phase2_drift_sigma_factor: float = 1.0
+    phase2_trust_threshold: float = 0.35
+    phase2_min_accuracy: float = 0.001
+    phase2_min_signals: int = 3
+    phase2_drift_sigma_factor: float = 1.5
 
     def __post_init__(self):
         if not (0.0 <= self.attack_ratio <= 0.5):

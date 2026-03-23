@@ -313,19 +313,12 @@ class DecentralisedSimulator:
             )
             self.results["consensus_score_per_round"].append(consensus)
 
-            # Anomaly detection (timed)
+            # Anomaly detection (timed) - compute z-score flags, metrics updated later
             t_det_start = time.time()
             flags = self._detect_anomalies(drifts, round_num)
-            round_metrics = self.metrics.update_round(round_num, flags)
             t_det_end = time.time()
             detection_overhead = t_det_end - t_det_start
             self.results["detection_flags_per_round"].append(flags)
-            self.results["detection_metrics_per_round"].append({
-                "precision": round_metrics["precision"],
-                "recall": round_metrics["recall"],
-                "f1": round_metrics["f1"],
-                "asr": round_metrics["asr"],
-            })
 
             z_scores = (
                 [f["z_score"] for f in flags]
@@ -358,6 +351,42 @@ class DecentralisedSimulator:
             verification_flags = list(self.verification_layer.flags)
             self._verification_flags_per_round.append(verification_flags)
             self._verification_time_per_round.append(verification_time)
+
+            # Compute detection metrics (once, after verification runs)
+            # Combines z-score flags with verification layer flags
+            if self.config.verification_enabled:
+                # Get set of nodes flagged by verification layer
+                ver_flagged_nodes = {
+                    vf["node_id"] for vf in verification_flags
+                    if vf.get("action") == "flagged"
+                }
+                # Create combined flags: z-score flags OR verification layer flags
+                combined_flags = []
+                for node_id in range(self.config.num_nodes):
+                    zscore_flagged = any(
+                        f["node_id"] == node_id and f.get("flagged", False)
+                        for f in flags
+                    )
+                    ver_layer_flagged = node_id in ver_flagged_nodes
+                    is_flagged = zscore_flagged or ver_layer_flagged
+
+                    combined_flags.append({
+                        "node_id": node_id,
+                        "flagged": is_flagged,
+                        "z_score_flagged": zscore_flagged,
+                        "verification_flagged": ver_layer_flagged,
+                    })
+                round_metrics = self.metrics.update_round(round_num, combined_flags)
+            else:
+                # No verification, just use z-score flags
+                round_metrics = self.metrics.update_round(round_num, flags)
+
+            self.results["detection_metrics_per_round"].append({
+                "precision": round_metrics["precision"],
+                "recall": round_metrics["recall"],
+                "f1": round_metrics["f1"],
+                "asr": round_metrics["asr"],
+            })
 
             # If verification changed models, re-collect states
             if verification_changed:
