@@ -760,5 +760,7 @@ class DecentralisedSimulator:
         try:
             from sheets_exporter import export_results as _sheets_export
             _sheets_export(filepath)
-        except Exception:
-            pass
+        except ImportError:
+            pass  # sheets_exporter not available
+        except Exception as e:
+            print(f"[Sheets] Export failed: {e}")
