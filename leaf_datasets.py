@@ -35,7 +35,7 @@ class LEAFDataset(Dataset):
     
     def __getitem__(self, idx):
         x = torch.FloatTensor(self.data[idx])
-        y = self.targets[idx]
+        y = int(self.targets[idx])  # Ensure label is integer for CrossEntropyLoss
         # FEMNIST 28x28 grayscale
         if len(x.shape) == 1 and x.shape[0] == 784:
             x = x.reshape(1, 28, 28)

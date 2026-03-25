@@ -6,10 +6,10 @@ This module implements a post-aggregation verification layer that:
 3. Re-aggregates with corrected neighbor sets
 4. Updates trust scores based on outcomes
 
-CORE INSIGHT: Analyze what nodes SEND, not their final state.
+Why we Analyze what nodes SEND.
 - Attackers SEND malicious updates but have normal FINAL states (they receive honest updates)
 - Honest nodes SEND normal updates but may have damaged FINAL states (they receive malicious updates)
-- So we must detect based on SENT updates via neighbor_models, not current_states
+- So we detect based on SENT updates via neighbor_models, not current_states
 """
 
 import time
@@ -859,15 +859,15 @@ class VerificationLayer:
 
     def _alpha_blend(
         self,
-        state1: Dict[str, torch.Tensor],
-        state2: Dict[str, torch.Tensor],
+        own_state: Dict[str, torch.Tensor],
+        neighbor_avg: Dict[str, torch.Tensor],
         alpha: float,
     ) -> Dict[str, torch.Tensor]:
-        """Blend two states: result = (1 - alpha) * state1 + alpha * state2."""
+        """Blend states using BALANCE formula: alpha * own + (1 - alpha) * neighbors."""
         result = {}
-        for key in state1.keys():
-            result[key] = ((1 - alpha) * state1[key].float() + alpha * state2[key].float()).to(
-                state1[key].dtype
+        for key in own_state.keys():
+            result[key] = (alpha * own_state[key].float() + (1 - alpha) * neighbor_avg[key].float()).to(
+                own_state[key].dtype
             )
         return result
 
