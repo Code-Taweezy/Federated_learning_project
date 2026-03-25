@@ -18,7 +18,7 @@ class SimulationConfig:
     dataset: str = "femnist"
     num_nodes: int = 32
     num_rounds: int = 50
-    local_epochs: int = 1
+    local_epochs: int = 5  # More epochs needed for effective FL learning
     batch_size: int = 128
     learning_rate: float = 0.01
     seed: int = 42

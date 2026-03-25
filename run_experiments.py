@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import List, Dict
 
 # Matches a round-metrics table row from decentralised_fl_sim.py output:
-#   <round> | <avg_acc> | <std_acc> | <avg_loss> [ | <honest> | <compromised> ]
+#   <round> | <average accuracy> | <standard deviation> | <average loss> [ | <honest accuracy> | <compromised accuracy> ]
 ROUND_RE = re.compile(
     r'^\s*(\d+)\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)'
     r'(?:\s*\|\s*([\d.]+)\s*\|\s*([\d.]+))?'
@@ -100,7 +100,7 @@ def _build_cross_dataset_suite(attack_ratio: float = 0.25,
     return experiments
 
 
-# Suite 2: Verification Layer comparison (refer to _build_verification_suite)
+# Suite 2: Verification Layer comparison (refer to the _build_verification_suite)
 def _build_verification_suite(attack_ratio: float = 0.25,
                               attack_type: str = 'directed',
                               topology: str = 'ring') -> List[Experiment]:

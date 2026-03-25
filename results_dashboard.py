@@ -4,12 +4,10 @@ Features:
     Live Charts
             accuracy + loss line graphs that update in real-time per round
             click any legend swatch to show/hide a series across all graphs
-    Round Table:
-            shows per-round metrics for the selected experiment, updated live after each experiment
-    Summary:  
-            final-results table + comparison bar charts
+    Round Table: shows per-round metrics for the selected experiment, updated live after each experiment
+    Summary:  final-results table + comparison bar charts
 
-    [Advanced Metric
+  
 
 Thread-safety: worker -> GUI via a Queue, drained every 80 ms.
 """
