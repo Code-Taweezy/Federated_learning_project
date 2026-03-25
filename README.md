@@ -6,7 +6,7 @@
 
 This repository contains the experimental infrastructure for evaluating decentralised federated learning (DFL) defenses under adversarial Byzantine conditions. The simulator models honest and malicious client interactions across configurable network topologies, attack strategies, defense mechanisms, and datasets - enabling systematic, reproducible evaluation of robustness, detection effectiveness, and computational efficiency.
 
-The purpose of this simulation is to establish baseline performance data for existing DFL defense mechanisms, which will later be compared against a novel lightweight post-acceptance verification layer designed to detect attacks that bypass initial filtering.
+The purpose of this simulation is to establish baseline performance data for existing DFL defense mechanisms, which will later be compared against a novel post-acceptance verification layer designed to detect attacks that bypass initial filtering.
 
 ## Features
 
@@ -72,9 +72,6 @@ To execute the full experiment suite:
 ```bash
 python run_experiments.py
 ```
-## Next Steps
-
-After completing baseline data collection and analysis, a **lightweight post-acceptance verification layer** will be implemented. This mechanism will target weaknesses identified in the baseline results and will be evaluated under the same experimental conditions, enabling direct comparison against existing methods across robustness, detection accuracy, and computational efficiency.
 
 ## Tech Stack
 
