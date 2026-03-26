@@ -29,7 +29,7 @@ class ALIEAttacker(BaseByzantineAttacker):
     by staying within statistical norms.
     """
 
-    def craft_malicious_update(
+    def _craft_attack(
         self,
         honest_updates: List[Dict[str, torch.Tensor]],
         node_id: int,

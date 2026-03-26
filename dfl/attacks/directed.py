@@ -16,7 +16,7 @@ class DirectedAttacker(BaseByzantineAttacker):
     effectively pushing the model away from the correct direction.
     """
 
-    def craft_malicious_update(
+    def _craft_attack(
         self,
         honest_updates: List[Dict[str, torch.Tensor]],
         node_id: int,

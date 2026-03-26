@@ -18,10 +18,10 @@ class SimulationConfig:
     dataset: str = "femnist"
     num_nodes: int = 32
     num_rounds: int = 50
-    local_epochs: int = 5  # More epochs needed for effective FL learning
+    local_epochs: int = 5  # Epochs needed for effective FL learning
     batch_size: int = 128
     learning_rate: float = 0.01
-    seed: int = 42
+    seed: int = 42 #Fixed for the purpose of the experiments, but can be made variable for more extensive testing.
 
     # Graph topology configuration
     topology: str = "ring"
@@ -34,6 +34,7 @@ class SimulationConfig:
     attack_type: str = "directed"
     attack_ratio: float = 0.0
     attack_strength: float = 1.0
+    attack_start_round: int = 0  # Round when attackers begin (0 = always attack)
 
     # Algorithm-specific parameters
     balance_alpha: float = 0.5
@@ -64,7 +65,7 @@ class SimulationConfig:
     verification_history_window: int = 10
     rescue_revocation_rounds: int = 3
 
-    # Verification layer thresholds 
+    # Verification layer thresholds
     phase1_trust_threshold: float = 0.35
     phase1_min_signals: int = 2
     phase1_consecutive_required: int = 1
@@ -73,10 +74,19 @@ class SimulationConfig:
     phase2_min_signals: int = 3
     phase2_drift_sigma_factor: float = 1.5
 
+    # Post-acceptance detection parameters
+    acceptance_trust_threshold: float = 0.6  # Trust >= this to become accepted
+    acceptance_consecutive_clean: int = 5    # Clean rounds required for acceptance
+    acceptance_anomaly_revoke: int = 2       # Anomalies to revoke acceptance
+
     def __post_init__(self):
         if not (0.0 <= self.attack_ratio <= 0.5):
             raise ValueError(
                 f"attack_ratio must be between 0.0 and 0.5, got {self.attack_ratio}"
+            )
+        if self.attack_start_round < 0:
+            raise ValueError(
+                f"attack_start_round must be >= 0, got {self.attack_start_round}"
             )
         if self.attack_type not in VALID_ATTACK_TYPES:
             raise ValueError(f"Unknown attack_type: {self.attack_type}")

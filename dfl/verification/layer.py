@@ -5,22 +5,29 @@ This module implements a post-aggregation verification layer that:
 2. Rescues honest nodes that were incorrectly rejected (false positives)
 3. Re-aggregates with corrected neighbor sets
 4. Updates trust scores based on outcomes
+5. Tracks acceptance status for post-acceptance attack detection
 
 Why we Analyze what nodes SEND.
 - Attackers SEND malicious updates but have normal FINAL states (they receive honest updates)
 - Honest nodes SEND normal updates but may have damaged FINAL states (they receive malicious updates)
 - So we detect based on SENT updates via neighbor_models, not current_states
+
+Post-Acceptance Attack Detection:
+- Tracks when nodes achieve "accepted" status through honest behavior
+- Detects behavioral changes when accepted nodes turn malicious
+- Uses heightened sensitivity for accepted nodes showing anomalies
 """
 
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import torch
 
 from dfl.config import SimulationConfig
 from dfl.utils import average_state_dicts
+from dfl.verification.acceptance import AcceptanceStatus, AcceptanceTracker
 from dfl.verification.trust import TrustManager
 
 
@@ -63,12 +70,17 @@ class VerificationLayer:
 
     The verification layer runs after each aggregation round and performs:
     - Phase 1: Detect attackers that passed the aggregator
+    - Phase 1b: Detect post-acceptance attacks (behavioral changes)
     - Phase 2: Rescue honest nodes that were incorrectly rejected
     - Phase 3: Re-aggregate with corrected neighbor sets
     - Phase 4: Update trust scores
+    - Phase 5: Update acceptance status
 
     Key principle: All detection is based on what nodes SEND (neighbor_models),
     not their final state after aggregation (current_states).
+
+    Post-acceptance detection: An anomaly from an accepted node is more significant
+    because it represents a behavioral CHANGE, not baseline behavior.
     """
 
     def __init__(self, config: SimulationConfig, nodes, graph):
@@ -84,6 +96,14 @@ class VerificationLayer:
         self.graph = graph
         self.trust = TrustManager(config)
 
+        # Acceptance tracking for post-acceptance attack detection
+        self.acceptance = AcceptanceTracker(
+            num_nodes=config.num_nodes,
+            acceptance_threshold=config.acceptance_trust_threshold,
+            consecutive_clean_required=config.acceptance_consecutive_clean,
+            anomaly_revoke_threshold=config.acceptance_anomaly_revoke,
+        )
+
         # Output tracking for metrics
         self.flags: List[dict] = []
         self.flags_per_round: List[List[dict]] = []
@@ -96,6 +116,10 @@ class VerificationLayer:
         self._outlier_k = 1.5  # MAD multiplier for outlier detection (more sensitive)
         self._direction_threshold = 0.40  # Below this = attack (raised to catch more)
         self._debug = True  # Set True to print debug info
+
+        # Post-acceptance sensitivity multiplier
+        # Accepted nodes get tighter thresholds (anomaly is more significant)
+        self._post_acceptance_sensitivity = 1.5
 
         # Historical tracking for multi-round evidence (reduces FPs)
         self._flag_history: Dict[int, List[int]] = {}  # sender_id -> list of rounds flagged
@@ -116,6 +140,9 @@ class VerificationLayer:
         """
         self.flags = []
 
+        # Update trust round counter for trajectory tracking
+        self.trust.set_round(ctx.round_num)
+
         # Skip during warmup period
         if ctx.round_num < self.warmup_rounds:
             self.flags_per_round.append([])
@@ -127,6 +154,15 @@ class VerificationLayer:
         # Phase 1: Detect attackers that passed the aggregator
         flagged_per_node = self._phase1_detect(ctx)
 
+        # Phase 1b: Detect post-acceptance attacks (behavioral changes)
+        post_acceptance_flags = self._detect_post_acceptance_attacks(ctx, flagged_per_node)
+
+        # Merge post-acceptance flags into flagged_per_node
+        for node_idx, additional_flags in post_acceptance_flags.items():
+            if node_idx not in flagged_per_node:
+                flagged_per_node[node_idx] = set()
+            flagged_per_node[node_idx].update(additional_flags)
+
         # Phase 2: Rescue honest nodes that were incorrectly rejected
         rescued_per_node = self._phase2_rescue(ctx, flagged_per_node)
 
@@ -135,6 +171,22 @@ class VerificationLayer:
 
         # Phase 4: Update trust scores
         self._phase4_update_trust(flagged_per_node, rescued_per_node)
+
+        # Phase 5: Update acceptance status
+        all_flagged: Set[int] = set()
+        for flags in flagged_per_node.values():
+            all_flagged.update(flags)
+
+        status_changes = self.acceptance.update_round(
+            ctx.round_num,
+            self.trust.trust_scores,
+            all_flagged,
+        )
+
+        # Log acceptance status changes
+        if self._debug and status_changes:
+            for node_id, new_status in status_changes.items():
+                print(f"[Acceptance] Node {node_id} -> {new_status.value}")
 
         elapsed = time.time() - start_time
         self.flags_per_round.append(self.flags.copy())
@@ -308,7 +360,123 @@ class VerificationLayer:
 
         return flagged_per_node
 
-   
+    # -------------------------------------------------------------------------
+    # Phase 1b: Post-Acceptance Attack Detection
+    # -------------------------------------------------------------------------
+
+    def _detect_post_acceptance_attacks(
+        self,
+        ctx: RoundContext,
+        initial_flagged: Dict[int, Set[int]],
+    ) -> Dict[int, Set[int]]:
+        """Detect attacks from previously-accepted nodes.
+
+        Key insight: An anomaly from an accepted node is MORE significant
+        because it represents a behavioral CHANGE, not baseline behavior.
+
+        Detection signals:
+        1. Trust drop from peak (accepted nodes had high trust)
+        2. Trust volatility increase (stable -> unstable)
+        3. Negative trust trend (was stable, now declining)
+
+        Combined with direction-based detection using LOWER thresholds
+        for accepted nodes (heightened sensitivity).
+
+        Args:
+            ctx: Round context with all data
+            initial_flagged: Already flagged nodes from Phase 1
+
+        Returns:
+            Dict mapping node_idx to set of additional flagged sender IDs
+        """
+        post_acceptance_flags: Dict[int, Set[int]] = {}
+
+        # Behavioral change thresholds
+        trust_drop_threshold = 0.15  # Dropped 15% from peak
+        volatility_threshold = 0.08  # High variance in trust
+        trend_threshold = -0.02  # Declining trend
+
+        for node_idx in range(len(self.nodes)):
+            accepted = ctx.accepted_per_node[node_idx]
+            if len(accepted) < 2:
+                continue
+
+            for sender_id in accepted:
+                # Skip if already flagged by Phase 1
+                if sender_id in initial_flagged.get(node_idx, set()):
+                    continue
+
+                record = self.acceptance.get_record(sender_id)
+
+                # Only analyze nodes that achieved acceptance at some point
+                if record.acceptance_round is None:
+                    continue
+
+                # Compute behavioral change signals
+                trust_drop = self.trust.compute_trust_drop(sender_id)
+                volatility = self.trust.compute_trust_volatility(sender_id)
+                trend = self.trust.compute_trust_trend(sender_id)
+
+                # Post-acceptance attack signature:
+                # - Significant trust drop from peak (they were trusted!)
+                # - Negative trend (trust declining)
+                # - High volatility (erratic behavior)
+                is_behavioral_change = (
+                    (trust_drop >= trust_drop_threshold and trend < 0)
+                    or (volatility >= volatility_threshold and trend < trend_threshold)
+                )
+
+                if not is_behavioral_change:
+                    continue
+
+                # Verify with sender statistics using LOWER thresholds
+                stats = self._compute_sender_stats(
+                    node_idx, accepted, ctx.neighbor_models
+                )
+
+                receiver_model = ctx.pre_agg_states[node_idx]
+                direction_score, rel_magnitude = self._compute_direction_score(
+                    sender_id, node_idx, accepted, ctx.neighbor_models, receiver_model
+                )
+
+                # Lower threshold for post-acceptance detection
+                # (multiply by 1.5 = more lenient baseline, so division = tighter)
+                effective_threshold = self._direction_threshold * 1.5
+
+                if direction_score < effective_threshold:
+                    if node_idx not in post_acceptance_flags:
+                        post_acceptance_flags[node_idx] = set()
+                    post_acceptance_flags[node_idx].add(sender_id)
+
+                    # Record detailed flag for metrics
+                    self._record_flag(
+                        node_idx=node_idx,
+                        sender_id=sender_id,
+                        stats=stats,
+                        phase=1,
+                        action="flagged",
+                        aggregator_flagged=False,
+                        post_acceptance=True,
+                        behavioral_signals={
+                            "trust_drop": trust_drop,
+                            "volatility": volatility,
+                            "trend": trend,
+                            "direction_score": direction_score,
+                            "rounds_since_acceptance": ctx.round_num
+                            - record.acceptance_round,
+                        },
+                    )
+
+                    if self._debug:
+                        print(
+                            f"[Post-Acceptance] Node {sender_id} flagged: "
+                            f"drop={trust_drop:.3f}, vol={volatility:.3f}, "
+                            f"trend={trend:.3f}, dir_score={direction_score:.3f}"
+                        )
+
+        return post_acceptance_flags
+
+
     # Phase 2: Rescue Honest Nodes
     
 
@@ -565,8 +733,9 @@ class VerificationLayer:
         2. Extreme direction alone (very low score = obvious attack)
         3. Strong direction + high magnitude (backup for when distance fails)
 
-        This layered approach catches attacks that might evade a single signal
-        while still avoiding false positives from non-IID effects.
+        ENHANCED: Uses tighter thresholds for previously-accepted nodes.
+        An anomaly from an accepted node is more significant because it
+        represents a behavioral CHANGE, not baseline behavior.
 
         Args:
             sender_id: The sender to check
@@ -579,6 +748,24 @@ class VerificationLayer:
         Returns:
             True if sender shows attack signature
         """
+        # Acceptance-aware threshold adjustment
+        record = self.acceptance.get_record(sender_id)
+        acceptance_multiplier = 1.0
+
+        if record.status == AcceptanceStatus.ACCEPTED:
+            # Accepted node: use TIGHTER thresholds (heightened scrutiny)
+            # A deviation from an accepted node is more significant
+            acceptance_multiplier = self._post_acceptance_sensitivity
+        elif record.status == AcceptanceStatus.SUSPICIOUS:
+            # Already suspicious: use even tighter thresholds
+            acceptance_multiplier = self._post_acceptance_sensitivity * 1.5
+
+        # Apply multiplier to effective thresholds (higher multiplier = tighter)
+        effective_direction_threshold = self._direction_threshold / acceptance_multiplier
+        effective_extreme_threshold = 0.10 / acceptance_multiplier
+        effective_strong_threshold = 0.20 / acceptance_multiplier
+        effective_magnitude_threshold = 3.0 / acceptance_multiplier
+
         # Check 1: Distance-based outlier
         is_distance_outlier = False
         distance = stats.distances.get(sender_id, 0.0)
@@ -590,10 +777,12 @@ class VerificationLayer:
         direction_score, rel_magnitude = self._compute_direction_score(
             sender_id, node_idx, all_senders, neighbor_models, receiver_model
         )
-        is_direction_outlier = direction_score < self._direction_threshold
+        is_direction_outlier = direction_score < effective_direction_threshold
 
         if self._debug and node_idx == 2:  # Only print for one node to reduce spam
-            print(f"      [Debug] sender={sender_id} dist_outlier={is_distance_outlier} "
+            status_str = record.status.value[:3]
+            print(f"      [Debug] sender={sender_id} status={status_str} "
+                  f"dist_outlier={is_distance_outlier} "
                   f"dir_score={direction_score:.3f} rel_mag={rel_magnitude:.3f} "
                   f"dir_outlier={is_direction_outlier}")
 
@@ -602,22 +791,45 @@ class VerificationLayer:
         # 1. Standard: BOTH distance AND direction outlier
         standard_outlier = is_distance_outlier and is_direction_outlier
 
-        # 2. Extreme direction WITH high magnitude: score < 0.10 AND rel_mag > 5.0
+        # 2. Extreme direction WITH high magnitude
         #    Low score alone is not enough - honest victims can also have low scores
         #    after FedAvg pollution. Attackers have BOTH low score AND high magnitude.
-        extreme_direction = direction_score < 0.10 and rel_magnitude > 5.0
+        extreme_direction = (
+            direction_score < effective_extreme_threshold
+            and rel_magnitude > 5.0 / acceptance_multiplier
+        )
 
         # 3. Strong direction + magnitude: direction shows attack signature AND large deviation
-        #    Uses magnitude threshold of 3.0 to distinguish attackers (who SEND concentrated
+        #    Uses magnitude threshold to distinguish attackers (who SEND concentrated
         #    attacks) from victims (who RECEIVE diluted attacks through aggregation)
-        strong_direction_with_magnitude = direction_score < 0.20 and rel_magnitude > 3.0
+        strong_direction_with_magnitude = (
+            direction_score < effective_strong_threshold
+            and rel_magnitude > effective_magnitude_threshold
+        )
 
         # 4. Low trust amplification: once a node is suspected, lower thresholds
         #    This helps catch attackers who evaded detection in earlier rounds
         sender_trust = self.trust.get_trust(sender_id)
-        low_trust_suspect = sender_trust < 0.35 and direction_score < 0.25 and rel_magnitude > 2.0
+        low_trust_suspect = (
+            sender_trust < 0.35
+            and direction_score < 0.25
+            and rel_magnitude > 2.0
+        )
 
-        return standard_outlier or extreme_direction or strong_direction_with_magnitude or low_trust_suspect
+        # 5. Post-acceptance anomaly: accepted node with any significant deviation
+        post_acceptance_anomaly = (
+            record.status in (AcceptanceStatus.ACCEPTED, AcceptanceStatus.SUSPICIOUS)
+            and direction_score < 0.30
+            and rel_magnitude > 2.0
+        )
+
+        return (
+            standard_outlier
+            or extreme_direction
+            or strong_direction_with_magnitude
+            or low_trust_suspect
+            or post_acceptance_anomaly
+        )
 
     def _compute_direction_score(
         self,
@@ -792,9 +1004,9 @@ class VerificationLayer:
         node.set_model_state(original_state)
         return acc
 
-    # -------------------------------------------------------------------------
+   
     # Re-aggregation Helpers
-    # -------------------------------------------------------------------------
+    
 
     def _reaggregate_with_formula(
         self,
@@ -956,9 +1168,9 @@ class VerificationLayer:
             result[key] = stacked.median(dim=0).values.to(models[0][key].dtype)
         return result
 
-    # -------------------------------------------------------------------------
+   
     # Record Keeping
-    # -------------------------------------------------------------------------
+
 
     def _record_flag(
         self,
@@ -968,6 +1180,8 @@ class VerificationLayer:
         phase: int,
         action: str,
         aggregator_flagged: bool = False,
+        post_acceptance: bool = False,
+        behavioral_signals: Optional[Dict] = None,
     ) -> None:
         """Record a flag or rescue action for metrics tracking.
 
@@ -978,8 +1192,11 @@ class VerificationLayer:
             phase: Phase number (1 for flag, 2 for rescue)
             action: "flagged" or "rescued"
             aggregator_flagged: True if flagged by aggregator (e.g., BALANCE rejection)
+            post_acceptance: True if this is a post-acceptance attack detection
+            behavioral_signals: Optional dict with trust_drop, volatility, trend, etc.
         """
         trust_before = self.trust.get_trust(sender_id)
+        acceptance_record = self.acceptance.get_record(sender_id)
 
         record = {
             "node_id": sender_id,
@@ -988,6 +1205,8 @@ class VerificationLayer:
             "action": action,
             "trust_before": trust_before,
             "aggregator_flagged": aggregator_flagged,
+            "post_acceptance": post_acceptance,
+            "acceptance_status": acceptance_record.status.value,
             "signals": {
                 "distance": stats.distances.get(sender_id, 0.0),
                 "median_dist": stats.median_dist,
@@ -996,6 +1215,10 @@ class VerificationLayer:
                 "is_outlier": stats.distances.get(sender_id, 0.0) > stats.outlier_threshold,
             },
         }
+
+        # Add behavioral signals if this is a post-acceptance detection
+        if behavioral_signals:
+            record["behavioral_signals"] = behavioral_signals
 
         self.flags.append(record)
 

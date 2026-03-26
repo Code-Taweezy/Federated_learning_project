@@ -376,6 +376,35 @@ class DecentralisedSimulator:
                         "z_score_flagged": zscore_flagged,
                         "verification_flagged": ver_layer_flagged,
                     })
+
+                # Track acceptance events for post-acceptance metrics
+                for event in self.verification_layer.acceptance.acceptance_events:
+                    if event.get("round") == round_num:
+                        self.metrics.record_acceptance(
+                            event["node_id"],
+                            event["round"],
+                        )
+
+                # Track attack start for post-acceptance metrics
+                if (
+                    self.attacker
+                    and round_num == self.config.attack_start_round
+                ):
+                    for attacker_id in self.attacker.compromised_nodes:
+                        self.metrics.record_attack_start(attacker_id, round_num)
+
+                # Record detections with acceptance status for metrics
+                for cf in combined_flags:
+                    if cf["flagged"]:
+                        was_accepted = self.verification_layer.acceptance.was_ever_accepted(
+                            cf["node_id"]
+                        )
+                        self.metrics.record_detection(
+                            cf["node_id"],
+                            round_num,
+                            was_accepted,
+                        )
+
                 round_metrics = self.metrics.update_round(round_num, combined_flags)
             else:
                 # No verification, just use z-score flags
@@ -430,10 +459,19 @@ class DecentralisedSimulator:
 
         # Final summary
         self._print_summary()
+
+        # Add post-acceptance metrics to results if applicable
+        if self.attacker and self.config.attack_start_round > 0:
+            self.results["post_acceptance"] = self.metrics.get_post_acceptance_summary()
+
         return self.results
 
     def _aggregation_round(self, round_num: int):
         """Perform one round of aggregation across all nodes."""
+        # Update attacker's round counter for delayed attack activation
+        if self.attacker:
+            self.attacker.set_current_round(round_num)
+
         all_states = [node.get_model_state() for node in self.nodes]
 
         new_states = []

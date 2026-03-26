@@ -3,6 +3,11 @@
 Tracks true positives, false positives, true negatives, false negatives,
 and derives precision, recall, F1, attack success rate (ASR), and
 time-to-detection from those counts.
+
+Extended with post-acceptance attack detection metrics:
+- Tracks which attackers achieved "accepted" status before attacking
+- Detection latency after attack begins
+- Pre-acceptance vs post-acceptance detection rates
 """
 
 from typing import Dict, List, Optional, Set
@@ -15,6 +20,9 @@ class MetricsTracker:
     previously embedded in the simulator. It provides both per-round
     and cumulative metrics, and can produce a summary dict suitable for
     JSON serialisation.
+
+    Extended with post-acceptance attack metrics for research on detecting
+    nodes that behave honestly to build trust, then turn malicious.
     """
 
     def __init__(self, num_nodes: int, compromised_nodes: Set[int]):
@@ -28,6 +36,65 @@ class MetricsTracker:
         self.cumulative_tn = 0
         self.cumulative_fn = 0
         self.detection_time: Optional[int] = None
+
+        # Post-acceptance attack tracking
+        self.attackers_achieved_acceptance: Set[int] = set()
+        self.attacker_acceptance_rounds: Dict[int, int] = {}  # attacker_id -> round
+        self.attacker_attack_start_rounds: Dict[int, int] = {}  # attacker_id -> round
+        self.attacker_detection_rounds: Dict[int, int] = {}  # attacker_id -> round
+
+        # Pre vs post acceptance detection counts
+        self.pre_acceptance_detections: int = 0
+        self.post_acceptance_detections: int = 0
+
+    def record_acceptance(self, node_id: int, round_num: int) -> None:
+        """Record when a node achieves acceptance status.
+
+        Args:
+            node_id: The node that achieved acceptance
+            round_num: The round when acceptance was achieved
+        """
+        if node_id in self.compromised_nodes:
+            self.attackers_achieved_acceptance.add(node_id)
+            if node_id not in self.attacker_acceptance_rounds:
+                self.attacker_acceptance_rounds[node_id] = round_num
+
+    def record_attack_start(self, node_id: int, round_num: int) -> None:
+        """Record when an attacker starts attacking.
+
+        Args:
+            node_id: The attacker node
+            round_num: The round when attacks begin
+        """
+        if node_id in self.compromised_nodes:
+            if node_id not in self.attacker_attack_start_rounds:
+                self.attacker_attack_start_rounds[node_id] = round_num
+
+    def record_detection(
+        self,
+        node_id: int,
+        round_num: int,
+        was_accepted: bool,
+    ) -> None:
+        """Record when an attacker is detected.
+
+        Args:
+            node_id: The detected node
+            round_num: The round of detection
+            was_accepted: Whether the node had achieved acceptance before detection
+        """
+        if node_id not in self.compromised_nodes:
+            return
+
+        # Track first detection round per attacker
+        if node_id not in self.attacker_detection_rounds:
+            self.attacker_detection_rounds[node_id] = round_num
+
+        # Track pre vs post acceptance detection
+        if was_accepted:
+            self.post_acceptance_detections += 1
+        else:
+            self.pre_acceptance_detections += 1
 
     def update_round(self, round_num: int, flags: List[dict]) -> Dict:
         """Record detection results for a single round.
@@ -111,6 +178,55 @@ class MetricsTracker:
             "recall": recall,
             "f1_score": f1,
             "detection_time": self.detection_time,
+        }
+
+    def get_post_acceptance_summary(self) -> Dict:
+        """Get summary of post-acceptance attack detection performance.
+
+        Returns dict with:
+        - attackers_total: Total number of attackers
+        - attackers_achieved_acceptance: Number who achieved accepted status
+        - acceptance_rate: Fraction who achieved acceptance
+        - pre_acceptance_detections: Detections before acceptance
+        - post_acceptance_detections: Detections after acceptance
+        - post_acceptance_detection_rate: Fraction of accepted attackers detected
+        - mean_detection_latency: Average rounds from attack start to detection
+        - detection_latencies: List of individual latencies
+        """
+        num_attackers = len(self.compromised_nodes)
+        num_accepted = len(self.attackers_achieved_acceptance)
+
+        # Detection latency: rounds from attack_start to detection
+        detection_latencies = []
+        for attacker_id in self.compromised_nodes:
+            attack_round = self.attacker_attack_start_rounds.get(attacker_id)
+            detect_round = self.attacker_detection_rounds.get(attacker_id)
+            if attack_round is not None and detect_round is not None:
+                latency = detect_round - attack_round
+                if latency >= 0:  # Only count if detected after attack started
+                    detection_latencies.append(latency)
+
+        # Post-acceptance detection rate: of accepted attackers, how many detected?
+        post_acc_detected = len(
+            self.attackers_achieved_acceptance & set(self.attacker_detection_rounds.keys())
+        )
+
+        return {
+            "attackers_total": num_attackers,
+            "attackers_achieved_acceptance": num_accepted,
+            "acceptance_rate": self._safe_div(num_accepted, num_attackers),
+            "pre_acceptance_detections": self.pre_acceptance_detections,
+            "post_acceptance_detections": self.post_acceptance_detections,
+            "post_acceptance_detection_rate": self._safe_div(post_acc_detected, num_accepted),
+            "mean_detection_latency": (
+                sum(detection_latencies) / len(detection_latencies)
+                if detection_latencies
+                else None
+            ),
+            "detection_latencies": detection_latencies,
+            "acceptance_rounds": dict(self.attacker_acceptance_rounds),
+            "attack_start_rounds": dict(self.attacker_attack_start_rounds),
+            "detection_rounds": dict(self.attacker_detection_rounds),
         }
 
     @staticmethod

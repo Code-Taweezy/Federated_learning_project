@@ -28,7 +28,7 @@ def run_debug():
     print("="*60)
 
     config = SimulationConfig(
-        dataset='shakespeare',  # Using shakespeare since femnist data is missing
+        dataset='femnist',  # FEMNIST dataset now available
         num_nodes=10,
         num_rounds=5,
         aggregation='balance',

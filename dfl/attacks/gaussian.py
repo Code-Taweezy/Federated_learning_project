@@ -1,4 +1,4 @@
-"""Gaussian noise attack: replaces parameters with scaled random noise."""
+#Gaussian noise attack: replaces parameters with scaled random noise.
 
 from typing import Dict, List
 
@@ -17,7 +17,7 @@ class GaussianAttacker(BaseByzantineAttacker):
     easily detectable by distance-based defences.
     """
 
-    def craft_malicious_update(
+    def _craft_attack(
         self,
         honest_updates: List[Dict[str, torch.Tensor]],
         node_id: int,
