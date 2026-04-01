@@ -1,4 +1,4 @@
-"""Directed deviation attack: inverts the sign of the honest average."""
+#Directed deviation attack: inverts the sign of the honest average.
 
 from typing import Dict, List
 

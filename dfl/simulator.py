@@ -80,7 +80,7 @@ class DecentralisedSimulator:
         self._round_neighbor_models: Dict[Tuple[int, int], Dict] = {}
 
     def _load_data(self):
-        """Load and partition the dataset."""
+        #Load and partition the dataset.
         from leaf_datasets import load_leaf_dataset, create_leaf_client_partitions
 
         data_path = f"./leaf/data/{self.config.dataset}/data"
@@ -104,7 +104,7 @@ class DecentralisedSimulator:
         print(f"   Train samples: {len(train_ds)}, Test samples: {len(test_ds)}")
 
     def _initialize_nodes(self):
-        """Create all federated nodes with their models and data loaders."""
+        #Create all federated nodes with their models and data loaders.
         from leaf_datasets import LEAFFEMNISTModel, LEAFCelebAModel, LEAFShakespeareModel
 
         self.nodes = []
@@ -144,7 +144,7 @@ class DecentralisedSimulator:
     # Per-round metric computations
 
     def _compute_drift(self, current_states, previous_states):
-        """L2 norm of parameter change per node between consecutive rounds."""
+        #L2 norm of parameter change per node between consecutive rounds.
         drifts = []
         for curr, prev in zip(current_states, previous_states):
             diff_norm_sq = 0.0
@@ -156,7 +156,7 @@ class DecentralisedSimulator:
         return drifts
 
     def _compute_peer_deviation(self, all_states):
-        """Mean L2 distance of each node to its neighbours plus global consensus."""
+        #Mean L2 distance of each node to its neighbours plus global consensus.
         deviations = []
         for node_idx in range(self.config.num_nodes):
             neighbors = self.graph.get_neighbors(node_idx)
@@ -175,7 +175,7 @@ class DecentralisedSimulator:
         return deviations, consensus
 
     def _compute_regression_slope(self, values, window=10):
-        """OLS slope and R-squared over the last window entries."""
+        #OLS slope and R-squared over the last window entries.
         if len(values) < 2:
             return 0.0, 0.0
         w = values[-window:]
@@ -193,7 +193,7 @@ class DecentralisedSimulator:
         return float(slope), float(r_sq)
 
     def _detect_anomalies(self, drifts, round_num):
-        """Z-score based anomaly detection; returns per-node flag dicts."""
+       #Z-score based anomaly detection; returns per-node flag dicts.
         if not drifts or len(drifts) < 2:
             return []
         mean_d = float(np.mean(drifts))
@@ -245,7 +245,7 @@ class DecentralisedSimulator:
     # Main simulation loop
 
     def run(self):
-        """Run the full simulation and return results."""
+        #Run the full simulation and return results.
         print("\nStarting simulation")
         self._print_results_table_header()
 
@@ -512,7 +512,7 @@ class DecentralisedSimulator:
             node.set_model_state(new_state)
 
     def _evaluate_round(self, round_num: int):
-        """Evaluate all nodes and print round results."""
+        #Evaluate all nodes and print round results.
         accuracies = []
         losses = []
 
@@ -635,7 +635,7 @@ class DecentralisedSimulator:
             )
 
     def save_results(self, filepath: str):
-        """Save results to JSON with run timestamp and per-round table."""
+        #Save results to JSON with run timestamp and per-round table.
         from datetime import datetime as _dt
 
         now = _dt.now()

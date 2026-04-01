@@ -70,13 +70,13 @@ class VerificationLayer:
 
     The verification layer runs after each aggregation round and performs:
     - Phase 1: Detect attackers that passed the aggregator
-    - Phase 1b: Detect post-acceptance attacks (behavioral changes)
+    - Phase 1.2: Detect post-acceptance attacks (behavioral changes)
     - Phase 2: Rescue honest nodes that were incorrectly rejected
     - Phase 3: Re-aggregate with corrected neighbor sets
     - Phase 4: Update trust scores
     - Phase 5: Update acceptance status
 
-    Key principle: All detection is based on what nodes SEND (neighbor_models),
+    All detection is based on what nodes SEND (neighbor_models),
     not their final state after aggregation (current_states).
 
     Post-acceptance detection: An anomaly from an accepted node is more significant
@@ -360,9 +360,8 @@ class VerificationLayer:
 
         return flagged_per_node
 
-    # -------------------------------------------------------------------------
-    # Phase 1b: Post-Acceptance Attack Detection
-    # -------------------------------------------------------------------------
+    # Phase 1.2: Post-Acceptance Attack Detection
+    
 
     def _detect_post_acceptance_attacks(
         self,

@@ -40,7 +40,7 @@ class TrustManager:
         self._current_round = 0
 
     def set_round(self, round_num: int) -> None:
-        """Update current round for history tracking."""
+        #Updates current round for history tracking.
         self._current_round = round_num
 
     def penalize(self, node_id: int) -> float:
